@@ -1,0 +1,23 @@
+# Milestone 2 — MPM Reference, Fallback & Dataset
+# Target: Google Colab T4 (CUDA 12.x, Python 3.10/3.11) or local CPU dev
+# ML stack (torch, torch-geometric, scikit-learn, imageio, tqdm) is added in M3+.
+
+# Physics backend (Taichi MLS-MPM)
+# Switched from NVIDIA Warp during E3: Warp 1.13 dropped warp.sim and ships no
+# MPM example; Taichi 1.7 ships an MLS-MPM-with-Lagrangian-forces example that
+# maps almost 1:1 to our cloth. See docs/m2-stack-note.md.
+taichi>=1.7,<2.0
+
+# Data, configs, plotting
+numpy>=1.26,<2.2
+scipy>=1.11          # scipy.sparse used in cloth_implicit.py (Baraff-Witkin PCG)
+pandas>=2.1          # eval harness CSV output and dataset manifest
+pyyaml>=6.0          # config loading in mpm_cloth.py, cloth_implicit.py, eval.py
+matplotlib>=3.8      # sanity plots in notebooks/00-mpm-baseline.ipynb
+
+# Notebooks (Colab provides these, but pin for local dev)
+jupyter>=1.0
+ipykernel>=6.29
+
+# Dev / testing
+pytest>=8.0

@@ -1,0 +1,66 @@
+# MPM reference simulator config (M2).
+# Implemented in src/mpm_cloth.py over Taichi MLS-MPM (3D, MLS-MPM transfers
+# with autodiff Lagrangian forces; pattern from Taichi's mpm_lagrangian_forces
+# example, generalized to 3D with linear co-rotational anisotropic stress).
+
+backend:
+  name: "taichi"
+  arch: "auto"          # "cuda" on Colab, "metal"/"vulkan" on macOS, "cpu" fallback
+  default_fp: "f32"
+  random_seed: 42
+
+cloth:
+  grid: [64, 64]                # particles laid out as a 64x64 quad sheet (~4096 particles)
+  size_m: [1.0, 1.0]            # 1 m x 1 m sheet
+  mass_kg: 0.2                  # total cloth mass; per-particle mass = mass_kg / n_particles
+  thickness_m: 0.001
+  initial_height_m: 1.5         # drop height for the drape scenario
+  initial_orientation_deg: 0    # rotation about the vertical axis (variation knob)
+
+material:
+  model: "linear_corotational"   # M2 default; "anisomp" is a stretch goal
+  young_modulus_warp_pa: 1.0e4   # along warp direction (cloth-soft kPa range; CFL-stable at dt=1e-4)
+  young_modulus_weft_pa: 1.0e4   # along weft direction
+  poisson_ratio: 0.3
+  density_kg_m2: 0.2             # cloth surface density (recomputed against mass_kg)
+  damping: 0.01
+
+mpm:
+  grid_resolution: 128            # background grid cells per side (Taichi convention)
+  domain_size_m: 2.0              # cube edge; world coordinates in [0, 2.0]^3
+  dx_m: null                      # auto = domain_size_m / grid_resolution
+  inv_dx: null                    # auto
+  dt_s: 1.0e-4                    # explicit symplectic Euler MPM step (CFL with E=1e4 Pa)
+  substeps_per_log: 10            # log every 10 sub-steps -> trajectory dt = 1.0e-3 s
+  gravity_m_s2: [0.0, -9.81, 0.0]
+  flip_blend: 0.95                # used only if a PIC/FLIP blend is enabled (default APIC)
+  cfl_max: 0.5                    # advisory; Taichi explicit MPM picks dt directly
+
+# In Taichi's MLS-MPM, contact is enforced at the grid stage by projecting
+# normal velocity. Sphere center / radius are scenario-specific.
+contact:
+  ground_y_m: 0.0
+  friction_mu: 0.3
+  primitives:
+    sphere:
+      enabled: true
+      center_m: [1.0, 0.4, 1.0]   # world coords (cube center is [1, 1, 1])
+      radius_m: 0.2
+
+# Scenarios for the dataset generator (M2/W4) and eval harness.
+scenarios:
+  drape:
+    duration_s: 3.0
+    init: "flat_at_y=1.5"
+  wind:
+    duration_s: 3.0
+    pinned_corners: ["top_left", "top_right"]
+    wind_speed_m_s: [0.0, 5.0]
+    wind_direction_deg: [0, 360]
+  collision:
+    duration_s: 3.0
+    pinned_corners: ["top_left", "top_right"]
+    sphere_velocity_m_s: 1.0
+
+determinism:
+  seed: 42                        # mirrors backend.random_seed; set on every reset

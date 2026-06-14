@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Data files (large binary trajectories)
+data/cloth_trajectories/**/*.npz
+data/cloth_trajectories/**/*.npy
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Logs and outputs
+*.log
+outputs/
+runs/
+wandb/
+
+# Model checkpoints
+*.pt
+*.pth
+*.ckpt

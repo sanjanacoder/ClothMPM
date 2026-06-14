@@ -1,0 +1,31 @@
+# Frozen evaluation protocol (M2).
+# Run via: python -m src.eval --config configs/eval.yaml --out results/<name>.csv
+
+scenarios:
+  drape:
+    description: "Cloth dropped onto a sphere of radius 0.2 m centered at (0, 0.4, 0)."
+    duration_s: 3.0
+    init: "flat_at_y=1.5"
+  wind:
+    description: "Cloth pinned at two top corners; wind force varied in direction and magnitude."
+    duration_s: 3.0
+    wind_speed_m_s: [0.0, 5.0]
+    wind_direction_deg: [0, 360]
+  collision:
+    description: "Cloth pinned at top edge; sphere of radius 0.15 m sweeps through it."
+    duration_s: 3.0
+    sphere_velocity_m_s: 1.0
+
+seeds_eval: [200, 201, 202, 203, 204]   # frozen eval seeds; never used for training
+seeds_train: [0, 1, 2, 3, 4, 5, 6, 7]
+seeds_val:   [100, 101, 102]
+
+dt_s: 1.0e-3
+record_every_n_steps: 5     # 200 Hz logging
+
+metrics:
+  per_particle_l2_threshold_m: 0.05   # tau, H1 success budget (locked W2; see docs/m1-paper-notes.md)
+  high_error_label_threshold_m: 0.10  # epsilon for detector positive label y_t = 1[L2(t) > eps]
+  rollout_horizons_s: [0.25, 0.5, 1.0, 2.0]
+
+reference: "mpm"             # what we measure neural / hybrid predictions against
