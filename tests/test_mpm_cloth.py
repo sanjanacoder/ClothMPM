@@ -7,7 +7,7 @@ Covers:
 - Bit-exact determinism across two independent runs of the same seed.
 
 These run at reduced grid (16x16 cloth / 32-cell grid) on CPU so the suite
-fits inside ~1 minute. Full-resolution validation moves to Colab T4 in W4.
+fits inside ~1 minute.
 """
 
 import numpy as np

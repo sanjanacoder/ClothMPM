@@ -170,11 +170,9 @@ def run_one_clip(spec: ClipSpec, base_cfg: dict, smoke: bool) -> dict[str, np.nd
     n_substeps = int(round(spec.duration_s / dt))
     log_every = spec.log_every_substeps
 
-    # We could inject wind force per step by modifying the sim; for E4b smoke
-    # run we keep wind as a metadata field and apply only via the sim's gravity.
-    # (Wind injection wires up in the next iteration when MPMClothSim grows
-    # an external_force API; for now the metadata records the *intended* wind
-    # so we can replay or apply at training time.)
+    # Wind force is recorded in clip metadata but not injected per-step into
+    # the simulator (MPMClothSim doesn't expose an external_force API yet).
+    # The intended wind parameters are preserved in metadata for downstream use.
     states_x, states_v, states_a, states_F, states_cf = [], [], [], [], []
     for s in range(n_substeps):
         sim.step()
@@ -253,11 +251,11 @@ def main():
     n_total = sum(counts.values())
     n_done = 0
 
-    # Reserve seeds:
+    # Seed ranges by split:
     #   Train  : [0, 1_000_000)
     #   Val    : [1_000_000, 2_000_000)
-    #   Eval   : [2_000_000, 3_000_000)   (mapped to roadmap eval seeds 200-204 below)
-    # For the smoke run we just use 0..5 so it's trivial to reproduce.
+    #   Eval   : [2_000_000, 3_000_000)
+    # For the smoke run we use 0..5 so it's trivial to reproduce.
     seed_base = {"drape": 0, "wind": 100_000, "collision": 200_000}
     if args.smoke:
         seed_base = {"drape": 0, "wind": 100, "collision": 200}

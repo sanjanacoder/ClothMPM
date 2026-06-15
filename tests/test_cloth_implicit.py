@@ -1,4 +1,4 @@
-"""Tests for src.cloth_implicit.ImplicitClothSim (Baraff-Witkin F2 fallback).
+"""Tests for src.cloth_implicit.ImplicitClothSim.
 
 Covers:
 - Spring topology counts on a 16x16 grid (struct + shear + bend).

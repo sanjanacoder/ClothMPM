@@ -1,9 +1,8 @@
-"""Reference MPM cloth simulator (Taichi MLS-MPM, 3D, 64x64 quad cloth).
+"""3D MLS-MPM cloth simulator (Taichi, 64x64 quad cloth).
 
-Implemented in M2 (W3). Adapted from Taichi's
-`examples/simulation/mpm_lagrangian_forces.py` (2D), generalized to 3D with
-a 64x64 quad-grid cloth and a linear co-rotational anisotropic stress model
-(warp/weft). Validated by static drape over a sphere.
+Adapted from Taichi's `examples/simulation/mpm_lagrangian_forces.py` (2D),
+extended to 3D with a 64x64 quad-grid cloth and a linear co-rotational
+anisotropic stress model (separate warp/weft Young's moduli).
 
 Backend: Taichi MLS-MPM. The MPM cycle is the standard MLS-MPM:
   1. P2G  : scatter particle mass and momentum to a 3D background grid using
@@ -176,7 +175,7 @@ class MPMClothSim:
         gravity = ti.Vector(list(d.gravity))
         sphere_c = ti.Vector(list(d.sphere_center))
         sphere_r = d.sphere_radius
-        # Lame parameters (linear co-rotational, isotropic for the M2 default;
+        # Lame parameters (linear co-rotational, isotropic;
         # warp/weft separation reduces to a single Young's modulus when equal).
         E = 0.5 * (d.young_warp + d.young_weft)
         nu = d.poisson
@@ -338,7 +337,7 @@ class MPMClothSim:
                     g_v = grid_v[base + offset]
                     new_v += weight * g_v
                     new_C += 4.0 * inv_dx * weight * g_v.outer_product(dpos)
-                # Acceleration estimate (used as label for the neural solver)
+                # Per-particle acceleration: velocity change across this step
                 a[p] = (new_v - v[p]) / dt
                 v[p] = new_v
                 x[p] += dt * v[p]
@@ -371,8 +370,6 @@ class MPMClothSim:
                           float(offset_x), float(offset_z))
         self._clear_grid()
         self._step_count = 0
-        # `scene` is kept for API parity with the wider scenario set; for E3 we
-        # only validate on `drape`. Wind/collision land in W4.
 
     def step(self) -> None:
         """One MLS-MPM step with autodiff Lagrangian forces."""

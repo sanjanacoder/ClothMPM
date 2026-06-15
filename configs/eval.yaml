@@ -1,4 +1,4 @@
-# Frozen evaluation protocol (M2).
+# Evaluation protocol config.
 # Run via: python -m src.eval --config configs/eval.yaml --out results/<name>.csv
 
 scenarios:
@@ -24,7 +24,7 @@ dt_s: 1.0e-3
 record_every_n_steps: 5     # 200 Hz logging
 
 metrics:
-  per_particle_l2_threshold_m: 0.05   # tau, H1 success budget (locked W2; see docs/m1-paper-notes.md)
+  per_particle_l2_threshold_m: 0.05   # tau: per-particle position tolerance for rollout horizon
   high_error_label_threshold_m: 0.10  # epsilon for detector positive label y_t = 1[L2(t) > eps]
   rollout_horizons_s: [0.25, 0.5, 1.0, 2.0]
 

@@ -1,9 +1,8 @@
-"""Implicit mass-spring cloth fallback (Baraff & Witkin 1998).
+"""Implicit mass-spring cloth solver (Baraff & Witkin 1998).
 
-Implemented as the F2 fallback in the M4 hybrid rollout: when the detector
-fires, one implicit Euler step is taken on the current particle state with
-external forces inherited from the MPM grid (gravity + sphere collision
-projection that the MPM step already accumulated).
+Mass-spring implicit Euler solver on the same 64x64 quad-grid particle layout
+as the MPM simulator. Used as a stable fallback in high-complexity regions
+where the MPM solver's explicit integration may lose accuracy.
 
 Spring topology on the 64x64 quad grid:
   - structural: horizontal + vertical neighbors (each particle has up to 4)
@@ -22,9 +21,8 @@ paper.
 
 Implementation choices vs. the paper:
   - Regular 64x64 quad mesh (not arbitrary triangle continuum); spring forces
-    rather than per-triangle stretch/shear conditions. This is the "simplified
-    Stuyck-style mass-spring" the roadmap calls for and is sufficient as a
-    safety net; the MPM reference is the high-fidelity solver.
+    rather than per-triangle stretch/shear conditions. This simplification is
+    sufficient for a stable fallback; the MPM simulator is the high-fidelity solver.
   - Damping uses the same spring direction but the simpler form
         f_d = -k_d * <v_i - v_j, e_hat> * e_hat
     rather than reusing the condition C(x). df_d/dv is identical in structure
@@ -390,9 +388,9 @@ class ImplicitClothSim:
              cg_tol: float = 1e-4) -> dict[str, Any]:
         """One implicit Euler step.
 
-        f_ext: external per-particle force (N, 3). If None, gravity is added.
-               If provided (e.g., handed in by the hybrid loop from the MPM
-               grid), it should already include gravity + collision response.
+        f_ext: external per-particle force (N, 3). If None, gravity is applied.
+               If provided, it should already include all external loading
+               (gravity, wind, collision response) for this step.
         """
         if dt is None:
             dt = self._dt

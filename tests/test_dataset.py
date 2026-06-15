@@ -102,7 +102,7 @@ def test_wind_pins_held(smoke_dataset):
     for _, row in wind.iterrows():
         clip = np.load(ROOT / row["path"], allow_pickle=True)
         meta = clip["meta"].item()
-        # Note: pinning is metadata-only at this E4b stage (the MPM sim does
-        # not yet honor pinned indices). We assert the metadata round-trips
-        # correctly so M3/M4 can wire up pinning later.
+        # Pinning is stored in clip metadata but not enforced by the MPM
+        # simulator on particle motion. This asserts the metadata is preserved
+        # correctly so pinning can be applied in downstream processing.
         assert len(meta["pinned_corner_indices"]) == 2

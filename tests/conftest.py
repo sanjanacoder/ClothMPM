@@ -1,8 +1,7 @@
 """Shared pytest fixtures for the MPM cloth tests.
 
-Tests run on CPU at a reduced grid (16x16 cloth, 32-cell grid) so they can
-finish in well under a minute. The full 64x64 / 128-grid configuration is
-reserved for the dataset-generation pass on Colab T4.
+Tests run on CPU at a reduced grid (16x16 cloth, 32-cell grid) so the suite
+completes in well under a minute.
 """
 
 from copy import deepcopy

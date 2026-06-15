@@ -1,7 +1,6 @@
-# MPM reference simulator config (M2).
-# Implemented in src/mpm_cloth.py over Taichi MLS-MPM (3D, MLS-MPM transfers
-# with autodiff Lagrangian forces; pattern from Taichi's mpm_lagrangian_forces
-# example, generalized to 3D with linear co-rotational anisotropic stress).
+# MPM reference simulator config.
+# Used by src/mpm_cloth.py (Taichi MLS-MPM, autodiff Lagrangian forces,
+# linear co-rotational anisotropic stress on a 3D quad-grid cloth).
 
 backend:
   name: "taichi"
@@ -18,7 +17,7 @@ cloth:
   initial_orientation_deg: 0    # rotation about the vertical axis (variation knob)
 
 material:
-  model: "linear_corotational"   # M2 default; "anisomp" is a stretch goal
+  model: "linear_corotational"   # "anisomp" for full anisotropic model
   young_modulus_warp_pa: 1.0e4   # along warp direction (cloth-soft kPa range; CFL-stable at dt=1e-4)
   young_modulus_weft_pa: 1.0e4   # along weft direction
   poisson_ratio: 0.3
@@ -47,7 +46,7 @@ contact:
       center_m: [1.0, 0.4, 1.0]   # world coords (cube center is [1, 1, 1])
       radius_m: 0.2
 
-# Scenarios for the dataset generator (M2/W4) and eval harness.
+# Scenario defaults for the dataset generator and eval harness.
 scenarios:
   drape:
     duration_s: 3.0

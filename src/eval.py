@@ -1,25 +1,23 @@
-"""Frozen evaluation protocol (M2/W4).
+"""Evaluation metrics and timing benchmarks for cloth simulation clips.
 
-Implements the metrics defined in docs/eval-plan.md and Roadmap Appendix B:
+Metrics:
   - per-particle L2 between predicted and reference particle clouds
   - Chamfer distance (symmetric mean nearest-neighbor)
   - energy-drift proxy (kinetic-energy ratio vs reference)
   - rollout horizon at threshold tau
-  - cosine similarity of consecutive accelerations (D1 detector signal)
-  - fallback fraction (for hybrid runs)
+  - cosine similarity of consecutive accelerations (complexity detector signal)
   - wall-clock per step (timing helpers)
 
 CLI:
-  python -m src.eval --reference path/to/clip_A.npz \
-                     --predicted path/to/clip_B.npz \
-                     --out results/eval_<name>.csv
-  python -m src.eval --baseline-timing --config configs/mpm.yaml \
-                     --grid 16 16 --grid-resolution 32 --n-steps 200 \
-                     --out results/timing_mpm.csv
+  python -m src.eval pair \
+      --reference path/to/clip_A.npz --predicted path/to/clip_B.npz \
+      --out results/eval_<name>.csv
+  python -m src.eval baseline-timing \
+      --config configs/mpm.yaml --grid 16 16 --grid-resolution 32 \
+      --n-steps 200 --out results/timing_mpm.csv
 
-The CSV always carries: git_sha, config_path, config_hash, run_name,
-plus per-frame metric columns. This is the schema the M3-M5 scripts
-will append to.
+Every output CSV carries: git_sha, config_path, config_hash, run_name,
+plus per-frame metric columns.
 """
 
 from __future__ import annotations
@@ -44,7 +42,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # -----------------------------------------------------------------------------
 
 def per_particle_l2(pred: np.ndarray, ref: np.ndarray) -> float:
-    """L2(t) = sqrt((1/N) sum_p ||x_pred_p - x_ref_p||^2). Roadmap App. B Eq. 1.
+    """L2(t) = sqrt((1/N) sum_p ||x_pred_p - x_ref_p||^2).
 
     pred, ref: (N, 3) particle positions at one frame.
     """
@@ -53,7 +51,7 @@ def per_particle_l2(pred: np.ndarray, ref: np.ndarray) -> float:
 
 
 def chamfer(pred: np.ndarray, ref: np.ndarray) -> float:
-    """Symmetric Chamfer distance between two point clouds. Roadmap App. B Eq. 2.
+    """Symmetric Chamfer distance between two point clouds.
 
     Uses brute-force pairwise distances; fine for N ~ 4096.
     """
@@ -73,7 +71,7 @@ def kinetic_energy(v: np.ndarray, mass_per: float) -> float:
 
 
 def energy_drift(ke_pred: float, ke_ref: float) -> float:
-    """|E_pred - E_ref| / E_ref. Roadmap App. B Eq. 3."""
+    """|E_pred - E_ref| / E_ref."""
     if abs(ke_ref) < 1e-12:
         return 0.0 if abs(ke_pred) < 1e-12 else float("inf")
     return float(abs(ke_pred - ke_ref) / abs(ke_ref))
@@ -82,8 +80,7 @@ def energy_drift(ke_pred: float, ke_ref: float) -> float:
 def rollout_horizon(l2_per_frame: np.ndarray, tau: float, dt: float) -> float:
     """Largest contiguous time (seconds from t=0) with L2 <= tau.
 
-    Roadmap App. B Eq. 4. l2_per_frame is (T,) and dt is the seconds between
-    frames in the input arrays (NOT the MPM sub-step dt).
+    l2_per_frame is (T,); dt is the seconds between frames (not the MPM sub-step dt).
     """
     bad = np.where(l2_per_frame > tau)[0]
     if bad.size == 0:
@@ -96,7 +93,7 @@ def cosine_window(
 ) -> np.ndarray:
     """Mean cosine similarity between two consecutive windows of accelerations.
 
-    Reproduces paper7's signal: at frame t with window size W,
+    At frame t with window size W,
         s_t = (1/N) sum_i cos( mean_a_i_in_[t-2W, t-W],
                                mean_a_i_in_[t-W, t]  )
     a_seq shape (T, N, 3). Returns (T,) with the first 2W-1 values set to 1.0
@@ -172,7 +169,7 @@ def eval_clip_pair(
 
 def attach_run_metadata(df: pd.DataFrame, *, config_path: str | Path,
                         run_name: str) -> pd.DataFrame:
-    """Add the bookkeeping columns required by docs/eval-plan.md §4."""
+    """Add traceability columns (run_name, git_sha, config_path, config_hash) to the DataFrame."""
     cfg_path = Path(config_path)
     cfg_text = cfg_path.read_text() if cfg_path.exists() else ""
     cfg_hash = hashlib.sha256(cfg_text.encode()).hexdigest()[:12]
