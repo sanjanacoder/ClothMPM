@@ -1,0 +1,2 @@
+run_name,git_sha,config_path,config_hash,stage,grid_x,grid_y,grid_resolution,dt_s,n_steps,n_warmup,mean_ms,median_ms,std_ms,p95_ms,p99_ms
+mpm_baseline_smoke,0bd1a39,/Users/gsalkar/ai/research/projectv2/configs/mpm.yaml,b92bde4982c7,mpm_reference,16,16,32,0.0001,100,10,0.6504962901817635,0.6454589965869673,0.07297724224342615,0.8086472931609023,0.8415778288326694

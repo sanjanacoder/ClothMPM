@@ -237,6 +237,49 @@ def baseline_timing(
     }])
 
 
+def implicit_timing(
+    config_path: str | Path,
+    grid: tuple[int, int] = (16, 16),
+    n_steps: int = 200,
+    n_warmup: int = 20,
+    dt: float | None = None,
+) -> pd.DataFrame:
+    """Time the implicit mass-spring fallback for `n_steps` after `n_warmup` warmup steps.
+
+    Uses the same grid size as baseline_timing() so the two rows are directly
+    comparable. dt defaults to configs/mpm.yaml implicit.dt_s (0.02 s).
+    Returns one row with the same schema as baseline_timing().
+    """
+    from src.cloth_implicit import ImplicitClothSim, load_implicit_config
+    cfg = load_implicit_config(config_path)
+    cfg["cloth"]["grid"] = list(grid)
+    step_dt = dt if dt is not None else float(cfg["implicit"]["dt_s"])
+
+    sim = ImplicitClothSim(cfg)
+    sim.reset()
+    for _ in range(n_warmup):
+        sim.step(dt=step_dt)
+    times = np.empty(n_steps, dtype=np.float64)
+    for i in range(n_steps):
+        t0 = time.perf_counter()
+        sim.step(dt=step_dt)
+        times[i] = time.perf_counter() - t0
+
+    return pd.DataFrame([{
+        "stage": "implicit_reference",
+        "grid_x": grid[0], "grid_y": grid[1],
+        "grid_resolution": None,
+        "dt_s": step_dt,
+        "n_steps": n_steps,
+        "n_warmup": n_warmup,
+        "mean_ms": 1000.0 * times.mean(),
+        "median_ms": 1000.0 * np.median(times),
+        "std_ms": 1000.0 * times.std(),
+        "p95_ms": 1000.0 * np.quantile(times, 0.95),
+        "p99_ms": 1000.0 * np.quantile(times, 0.99),
+    }])
+
+
 # -----------------------------------------------------------------------------
 # CLI
 # -----------------------------------------------------------------------------
@@ -261,12 +304,21 @@ def main():
     p_time.add_argument("--out", required=True)
     p_time.add_argument("--name", default="mpm_baseline_timing")
 
+    p_imp = sub.add_parser("implicit-timing", help="Wall-clock per step for the implicit mass-spring fallback.")
+    p_imp.add_argument("--config", default=str(ROOT / "configs" / "mpm.yaml"))
+    p_imp.add_argument("--grid", nargs=2, type=int, default=[16, 16])
+    p_imp.add_argument("--n-steps", type=int, default=200)
+    p_imp.add_argument("--n-warmup", type=int, default=20)
+    p_imp.add_argument("--dt", type=float, default=None, help="Override implicit dt (s). Default: from config.")
+    p_imp.add_argument("--out", required=True)
+    p_imp.add_argument("--name", default="implicit_baseline_timing")
+
     args = ap.parse_args()
 
     if args.mode == "pair":
         df = eval_clip_pair(Path(args.predicted), Path(args.reference))
         df = attach_run_metadata(df, config_path=args.config, run_name=args.name)
-    else:
+    elif args.mode == "baseline-timing":
         df = baseline_timing(
             args.config,
             grid=tuple(args.grid),
@@ -275,14 +327,23 @@ def main():
             n_warmup=args.n_warmup,
         )
         df = attach_run_metadata(df, config_path=args.config, run_name=args.name)
+    else:
+        df = implicit_timing(
+            args.config,
+            grid=tuple(args.grid),
+            n_steps=args.n_steps,
+            n_warmup=args.n_warmup,
+            dt=args.dt,
+        )
+        df = attach_run_metadata(df, config_path=args.config, run_name=args.name)
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out, index=False)
     print(f"wrote {out} ({len(df)} rows)")
-    if args.mode == "baseline-timing":
+    if args.mode in ("baseline-timing", "implicit-timing"):
         for _, row in df.iterrows():
-            print(f"  {row['stage']:20s} mean={row['mean_ms']:.2f} ms  "
+            print(f"  {row['stage']:22s} mean={row['mean_ms']:.2f} ms  "
                   f"median={row['median_ms']:.2f} ms  p95={row['p95_ms']:.2f} ms")
 
 

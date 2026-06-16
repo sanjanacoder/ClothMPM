@@ -97,12 +97,14 @@ def test_drape_y_decreases(smoke_dataset):
 
 
 def test_wind_pins_held(smoke_dataset):
-    """Wind clips pin two corners; those particles should not move."""
+    """Wind clips store two pinned-corner indices in metadata.
+
+    Note: pinning is metadata-only in the M2 smoke run — the MPM simulator
+    does not yet enforce velocity=0 for these particles. This test verifies
+    the metadata round-trips correctly so M3/M4 can wire up enforcement later.
+    """
     wind = smoke_dataset[smoke_dataset["scenario"] == "wind"]
     for _, row in wind.iterrows():
         clip = np.load(ROOT / row["path"], allow_pickle=True)
         meta = clip["meta"].item()
-        # Pinning is stored in clip metadata but not enforced by the MPM
-        # simulator on particle motion. This asserts the metadata is preserved
-        # correctly so pinning can be applied in downstream processing.
         assert len(meta["pinned_corner_indices"]) == 2
