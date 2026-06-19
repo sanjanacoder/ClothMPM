@@ -163,19 +163,28 @@ def run_one_clip(spec: ClipSpec, base_cfg: dict, smoke: bool) -> dict[str, np.nd
     ti.reset()
     from src.mpm_cloth import MPMClothSim
     cfg = cfg_for_clip(base_cfg, spec, smoke)
+    gx, gy = cfg["cloth"]["grid"]
+    n = gx * gy
+
+    # Build pinned mask: True for corner particles that act as suspension points.
+    pinned_mask = np.zeros(n, dtype=bool)
+    for idx in spec.pinned_corner_indices:
+        pinned_mask[idx] = True
+
+    # wind_force_n is the total force on the cloth in Newtons; distribute evenly.
+    total_wind = np.array(spec.wind_force_n, dtype=np.float32)
+    f_ext = np.tile(total_wind / n, (n, 1))  # (N, 3) per-particle force
+
     sim = MPMClothSim(cfg)
-    sim.reset()
+    sim.reset(pinned_mask=pinned_mask)
 
     dt = float(cfg["mpm"]["dt_s"])
     n_substeps = int(round(spec.duration_s / dt))
     log_every = spec.log_every_substeps
 
-    # Wind force is recorded in clip metadata but not injected per-step into
-    # the simulator (MPMClothSim doesn't expose an external_force API yet).
-    # The intended wind parameters are preserved in metadata for downstream use.
     states_x, states_v, states_a, states_F, states_cf = [], [], [], [], []
     for s in range(n_substeps):
-        sim.step()
+        sim.step(f_ext=f_ext)
         if s % log_every == 0:
             st = sim.state()
             states_x.append(st["x"].astype(np.float32))

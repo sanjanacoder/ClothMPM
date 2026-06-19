@@ -156,6 +156,11 @@ class MPMClothSim:
         # Energy scalar for autodiff
         self.total_energy = ti.field(dtype=ti.f32, shape=(), needs_grad=True)
 
+        # Per-particle external force (N) — populated by step(); zero by default
+        self.f_wind = ti.Vector.field(3, dtype=ti.f32, shape=n_p)
+        # Pinned mask (1 = fixed suspension point, velocity zeroed each step)
+        self.pinned = ti.field(dtype=ti.i32, shape=n_p)
+
     # -- kernels --------------------------------------------------------------
 
     def _compile_kernels(self) -> None:
@@ -193,6 +198,8 @@ class MPMClothSim:
         grid_v = self.grid_v
         grid_m = self.grid_m
         total_energy = self.total_energy
+        f_wind = self.f_wind
+        pinned = self.pinned
 
         @ti.func
         def _idx(i, j):
@@ -281,8 +288,8 @@ class MPMClothSim:
                 w1 = 0.75 - (fx - 1.0) ** 2
                 w2 = 0.5 * (fx - 0.5) ** 2
                 affine = p_mass * C[p]
-                # Force from autodiff: x.grad is the gradient of total_energy w.r.t. x
-                fext = -x.grad[p]
+                # Elastic force from autodiff + user-supplied external force (wind etc.)
+                fext = -x.grad[p] + f_wind[p]
                 for i, j, k in ti.static(ti.ndrange(3, 3, 3)):
                     offset = ti.Vector([i, j, k])
                     weight = (w0 if i == 0 else (w1 if i == 1 else w2))[0] * \
@@ -337,6 +344,12 @@ class MPMClothSim:
                     g_v = grid_v[base + offset]
                     new_v += weight * g_v
                     new_C += 4.0 * inv_dx * weight * g_v.outer_product(dpos)
+                # Pinned particles are fixed suspension points: zero their velocity
+                # and affine state so position never accumulates drift.
+                # Multiply rather than branch to avoid Taichi conditional-assign limits.
+                pin_factor = 1.0 - ti.cast(pinned[p], ti.f32)
+                new_v = new_v * pin_factor
+                new_C = new_C * pin_factor
                 # Per-particle acceleration: velocity change across this step
                 a[p] = (new_v - v[p]) / dt
                 v[p] = new_v
@@ -358,21 +371,39 @@ class MPMClothSim:
 
     # -- public API -----------------------------------------------------------
 
-    def reset(self, scene: str = "drape", seed: int = 42) -> None:
-        """Initialize the cloth flat above the sphere and zero the grid."""
+    def reset(self, scene: str = "drape", seed: int = 42,
+              pinned_mask: np.ndarray | None = None) -> None:
+        """Initialize the cloth flat above the sphere and zero the grid.
+
+        pinned_mask: bool array of shape (N,). True entries mark fixed
+        suspension points whose velocity is zeroed every step. Pass None
+        (default) for a fully free cloth (drape scenario).
+        """
         c = self.cfg
         height = float(c["cloth"]["initial_height_m"])
         size_x, size_y = c["cloth"]["size_m"]
-        # Center the cloth on the (x, z) midplane of the domain
         offset_x = 0.5 * (c["mpm"]["domain_size_m"] - size_x)
         offset_z = 0.5 * (c["mpm"]["domain_size_m"] - size_y)
         self._init_layout(float(height), float(size_x), float(size_y),
                           float(offset_x), float(offset_z))
         self._clear_grid()
+        self.f_wind.fill(0.0)
+        if pinned_mask is not None:
+            self.pinned.from_numpy(pinned_mask.astype(np.int32))
+        else:
+            self.pinned.fill(0)
         self._step_count = 0
 
-    def step(self) -> None:
-        """One MLS-MPM step with autodiff Lagrangian forces."""
+    def step(self, f_ext: np.ndarray | None = None) -> None:
+        """One MLS-MPM step with autodiff Lagrangian forces.
+
+        f_ext: optional (N, 3) float32 array of per-particle external forces
+        in Newtons (e.g. wind). Pass None (default) for gravity-only stepping.
+        """
+        if f_ext is not None:
+            self.f_wind.from_numpy(f_ext.astype(np.float32))
+        else:
+            self.f_wind.fill(0.0)
         self._clear_grid()
         # x.grad gets populated by ti.ad.Tape over compute_total_energy
         self.total_energy[None] = 0.0
