@@ -52,6 +52,8 @@ import numpy as np
 import scipy.sparse as sp
 import yaml
 
+from src.contact import ContactGeometry
+
 
 # -----------------------------------------------------------------------------
 # Config loading
@@ -201,7 +203,14 @@ def _spring_forces_and_blocks(
     # Stiffness blocks df/dx: per spring, the i->j cross block is K_ij_x
     # K_ij_x = +k * [(L-L0)/L * (I - e_hat eT) + e_hat eT]
     eye = np.eye(3)
-    factor_proj = (k * stretch / L_safe)[:, None, None]            # (S, 1, 1)
+    # Definiteness fix (Baraff-Witkin 1998, sec. 5.3): the (L-L0)/L term goes
+    # negative under compression (L < L0), which makes the assembled system
+    # indefinite and breaks the CG solve's SPD assumption -- the cloth NaNs the
+    # moment it wraps the sphere, exactly when the fallback is needed. Clamp that
+    # term to >= 0 so K stays positive semidefinite. The force `f_per` keeps the
+    # true (signed) stretch; only the Jacobian is approximated.
+    stretch_pos = np.maximum(stretch, 0.0)
+    factor_proj = (k * stretch_pos / L_safe)[:, None, None]        # (S, 1, 1)
     eet = e_hat[:, :, None] * e_hat[:, None, :]                    # (S, 3, 3)
     K_ij_x = factor_proj * (eye - eet) + k * eet                   # (S, 3, 3)
     # Damping blocks df/dv: K_ij_v = +k_d * eet
@@ -244,6 +253,12 @@ class ImplicitClothSim:
         self._gravity = np.asarray(config["mpm"]["gravity_m_s2"], dtype=np.float64)
         self._dt = float(config["implicit"]["dt_s"])
 
+        # Shared contact geometry (sphere/box/ground). Used as the fallback's
+        # always-on safety layer after each step, in the same world frame as the
+        # MPM solver so handoff states are consistent.
+        self._contact = ContactGeometry(config)
+        self._domain = self._contact.domain
+
         # State
         self.x = np.zeros((self._n, 3), dtype=np.float64)
         self.v = np.zeros((self._n, 3), dtype=np.float64)
@@ -255,16 +270,21 @@ class ImplicitClothSim:
               v0: np.ndarray | None = None,
               pinned: list[int] | None = None) -> None:
         if x0 is None:
-            # Default: lay flat at the cloth's initial height in xy plane,
-            # consistent with mpm_cloth's reset.
+            # Default: lay flat at the cloth's initial height, centered in the
+            # domain so the cloth sits directly above the sphere. This matches
+            # mpm_cloth's reset (offset = 0.5*(domain - size)); without the
+            # offset the cloth would sit in the corner and the shared contact
+            # geometry (sphere at domain center) would be wrong.
             h = float(self.cfg["cloth"]["initial_height_m"])
             sx, sy = self._size
+            offset_x = 0.5 * (self._domain - sx)
+            offset_z = 0.5 * (self._domain - sy)
             for i in range(self._gx):
                 for j in range(self._gy):
                     self.x[_idx(i, j, self._gy)] = [
-                        (i + 0.5) * (sx / self._gx),
+                        offset_x + (i + 0.5) * (sx / self._gx),
                         h,
-                        (j + 0.5) * (sy / self._gy),
+                        offset_z + (j + 0.5) * (sy / self._gy),
                     ]
         else:
             assert x0.shape == (self._n, 3)
@@ -414,6 +434,10 @@ class ImplicitClothSim:
         # Apply: pinned particles stay put (dv already 0 for them)
         self.v = self.v + dv
         self.x = self.x + h * self.v
+        # Always-on contact safety layer: project out of sphere/box/ground.
+        # The fallback is summoned precisely during hard contact, so this must
+        # run unconditionally after every step.
+        self.x, self.v = self._contact.project_contact(self.x, self.v)
         return {"cg_iters": iters,
                 "max_dv": float(np.linalg.norm(dv, axis=-1).max())}
 
