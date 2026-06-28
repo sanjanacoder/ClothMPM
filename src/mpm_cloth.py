@@ -32,6 +32,8 @@ import numpy as np
 import taichi as ti
 import yaml
 
+from src.contact import ContactGeometry
+
 
 # -----------------------------------------------------------------------------
 # Helpers
@@ -83,10 +85,18 @@ class MPMClothSim:
             config = load_mpm_config(config)
         self.cfg = config
         self._d = self._derive_constants()
+        # Shared contact geometry: the constraint kernel reads its sphere/box
+        # constants so the MPM solver and the implicit fallback can never drift.
+        self._contact = ContactGeometry(config)
         self._init_taichi()
         self._allocate_fields()
         self._compile_kernels()
         self._step_count = 0
+        # Instability trigger: a grid node should not move more than ~cfl_factor
+        # cells per step. Conservative default (well above normal sim speeds) to
+        # avoid false positives; tune empirically. See grid_diagnostics().
+        self.cfl_factor = float(self.cfg.get("diagnostics", {}).get("cfl_factor", 5.0))
+        self.last_diagnostics: dict[str, Any] | None = None
 
     # -- setup ----------------------------------------------------------------
 
@@ -180,6 +190,9 @@ class MPMClothSim:
         gravity = ti.Vector(list(d.gravity))
         sphere_c = ti.Vector(list(d.sphere_center))
         sphere_r = d.sphere_radius
+        # Box margin (in grid cells) read from the shared contact module so the
+        # kernel and the numpy fallback use the same value.
+        box_margin = self._contact.box_margin_cells
         # Lame parameters (linear co-rotational, isotropic;
         # warp/weft separation reduces to a single Young's modulus when equal).
         E = 0.5 * (d.young_warp + d.young_weft)
@@ -302,13 +315,22 @@ class MPMClothSim:
                     grid_m[base + offset] += weight * p_mass
 
         @ti.kernel
-        def grid_update():
+        def grid_normalize_gravity():
+            # Physics part of the grid update: momentum -> velocity, add gravity.
+            # No contact here -- this is the swappable "blade". A neural grid
+            # solver replaces (or corrects) the velocities this produces.
             for I in ti.grouped(grid_m):
                 if grid_m[I] > 0.0:
                     inv_m = 1.0 / grid_m[I]
                     grid_v[I] = inv_m * grid_v[I]
-                    # Gravity
                     grid_v[I] += dt * gravity
+
+        @ti.kernel
+        def grid_apply_constraints():
+            # Always-on safety layer: hard contact constraints that run after any
+            # solver (physics or neural). Must not be delegated to the network.
+            for I in ti.grouped(grid_m):
+                if grid_m[I] > 0.0:
                     # Sphere collider (no-penetration projection)
                     pos = ti.Vector([I[0] * dx, I[1] * dx, I[2] * dx])
                     rel = pos - sphere_c
@@ -317,13 +339,13 @@ class MPMClothSim:
                         vn = grid_v[I].dot(n)
                         if vn < 0.0:
                             grid_v[I] -= vn * n
-                    # Box bounds (3-cell margin on every face)
-                    if I[0] < 3 and grid_v[I][0] < 0.0: grid_v[I][0] = 0.0
-                    if I[0] > n_grid - 3 and grid_v[I][0] > 0.0: grid_v[I][0] = 0.0
-                    if I[1] < 3 and grid_v[I][1] < 0.0: grid_v[I][1] = 0.0
-                    if I[1] > n_grid - 3 and grid_v[I][1] > 0.0: grid_v[I][1] = 0.0
-                    if I[2] < 3 and grid_v[I][2] < 0.0: grid_v[I][2] = 0.0
-                    if I[2] > n_grid - 3 and grid_v[I][2] > 0.0: grid_v[I][2] = 0.0
+                    # Box bounds (box_margin-cell margin on every face)
+                    if I[0] < box_margin and grid_v[I][0] < 0.0: grid_v[I][0] = 0.0
+                    if I[0] > n_grid - box_margin and grid_v[I][0] > 0.0: grid_v[I][0] = 0.0
+                    if I[1] < box_margin and grid_v[I][1] < 0.0: grid_v[I][1] = 0.0
+                    if I[1] > n_grid - box_margin and grid_v[I][1] > 0.0: grid_v[I][1] = 0.0
+                    if I[2] < box_margin and grid_v[I][2] < 0.0: grid_v[I][2] = 0.0
+                    if I[2] > n_grid - box_margin and grid_v[I][2] > 0.0: grid_v[I][2] = 0.0
 
         @ti.kernel
         def g2p():
@@ -366,7 +388,8 @@ class MPMClothSim:
         self._clear_grid = clear_grid
         self._compute_total_energy = compute_total_energy
         self._p2g = p2g
-        self._grid_update = grid_update
+        self._grid_normalize_gravity = grid_normalize_gravity
+        self._grid_apply_constraints = grid_apply_constraints
         self._g2p = g2p
 
     # -- public API -----------------------------------------------------------
@@ -394,11 +417,26 @@ class MPMClothSim:
             self.pinned.fill(0)
         self._step_count = 0
 
-    def step(self, f_ext: np.ndarray | None = None) -> None:
+    def step(self, f_ext: np.ndarray | None = None,
+             grid_solver: str | Any = "physics",
+             diagnostics: bool = False) -> dict[str, Any] | None:
         """One MLS-MPM step with autodiff Lagrangian forces.
 
         f_ext: optional (N, 3) float32 array of per-particle external forces
         in Newtons (e.g. wind). Pass None (default) for gravity-only stepping.
+
+        grid_solver: selects what computes the grid velocities after P2G.
+          - "physics" (default): the built-in normalize+gravity kernel.
+          - a callable `f(grid_v_np, grid_m_np, dt) -> grid_v_np`: a neural (or
+            any numpy) grid solver. It receives the normalized+gravity grid
+            velocities and must return corrected velocities of the same shape.
+        In both cases the hard-constraint safety layer runs afterward, so the
+        solver output can never penetrate the sphere or leave the box.
+
+        diagnostics: if True, collect grid metrics around the constraint step
+        and return them as a dict (also stored on `self.last_diagnostics`); the
+        `is_unstable` flag is the fallback trigger. Normal rollouts pass False
+        and pay zero overhead. Returns None when diagnostics is False.
         """
         if f_ext is not None:
             self.f_wind.from_numpy(f_ext.astype(np.float32))
@@ -410,9 +448,90 @@ class MPMClothSim:
         with ti.ad.Tape(self.total_energy):
             self._compute_total_energy()
         self._p2g()
-        self._grid_update()
+        # Swappable grid solver: physics blade or neural blade into the same socket.
+        self._grid_normalize_gravity()
+        if grid_solver != "physics":
+            grid_v_np = self.grid_v.to_numpy()
+            grid_m_np = self.grid_m.to_numpy()
+            corrected = grid_solver(grid_v_np, grid_m_np, self._d.dt)
+            self.grid_v.from_numpy(np.ascontiguousarray(corrected, dtype=np.float32))
+        diag = None
+        if diagnostics:
+            # Snapshot the solver output (pre-constraint) and mass, run the
+            # constraint layer, then snapshot again to get ke_before/ke_after.
+            gv_before = self.grid_v.to_numpy()
+            gm = self.grid_m.to_numpy()
+            self._grid_apply_constraints()
+            gv_after = self.grid_v.to_numpy()
+            diag = self._compute_grid_diagnostics(gv_before, gv_after, gm)
+            self.last_diagnostics = diag
+        else:
+            # Always-on hard-constraint safety layer.
+            self._grid_apply_constraints()
         self._g2p()
         self._step_count += 1
+        return diag
+
+    def _compute_grid_diagnostics(self, gv_before: np.ndarray, gv_after: np.ndarray,
+                                  gm: np.ndarray) -> dict[str, Any]:
+        """Compute grid health metrics in numpy (only on the diagnostics path).
+
+        gv_before is the solver output (after normalize+gravity / neural
+        correction, before the constraint layer); gv_after is post-constraint.
+        Contact counts mirror the constraint kernel's geometry exactly.
+        """
+        d = self._d
+        g = self._contact
+        active = gm > 0.0
+        n_active = int(active.sum())
+        dx_over_dt = d.dx / d.dt
+        if n_active == 0:
+            return {
+                "n_active": 0, "n_contact_sphere": 0, "n_contact_box": 0,
+                "max_velocity": 0.0, "ke_before": 0.0, "ke_after": 0.0,
+                "is_unstable": not (np.isfinite(gv_before).all()
+                                    and np.isfinite(gm).all()),
+            }
+        idx = np.argwhere(active)                       # (K, 3) integer node indices
+        pos = idx.astype(np.float64) * d.dx             # world positions
+        vel = gv_before[active]                         # (K, 3) solver velocities
+        m = gm[active]                                  # (K,)
+        speed = np.linalg.norm(vel, axis=-1)
+        max_velocity = float(speed.max())
+
+        # Sphere: node inside the sphere AND moving inward (vn < 0) -> kernel fires.
+        rel = pos - g.sphere_c
+        dist = np.linalg.norm(rel, axis=-1)
+        inside = dist < g.sphere_r
+        n_hat = rel / np.maximum(dist, 1e-12)[:, None]
+        vn = (vel * n_hat).sum(axis=-1)
+        n_contact_sphere = int((inside & (vn < 0.0)).sum())
+
+        # Box: node within box_margin cells of a face AND moving outward.
+        bm = g.box_margin_cells
+        hi = d.n_grid - bm
+        box_fired = np.zeros(n_active, dtype=bool)
+        for dim in range(3):
+            low = (idx[:, dim] < bm) & (vel[:, dim] < 0.0)
+            high = (idx[:, dim] > hi) & (vel[:, dim] > 0.0)
+            box_fired |= low | high
+        n_contact_box = int(box_fired.sum())
+
+        ke_before = 0.5 * float((m * speed ** 2).sum())
+        ke_after = 0.5 * float((m * np.linalg.norm(gv_after[active], axis=-1) ** 2).sum())
+
+        finite = bool(np.isfinite(gv_before).all() and np.isfinite(gm).all())
+        is_unstable = (not finite) or (max_velocity > self.cfl_factor * dx_over_dt)
+
+        return {
+            "n_active": n_active,
+            "n_contact_sphere": n_contact_sphere,
+            "n_contact_box": n_contact_box,
+            "max_velocity": max_velocity,
+            "ke_before": ke_before,
+            "ke_after": ke_after,
+            "is_unstable": bool(is_unstable),
+        }
 
     def state(self) -> dict[str, np.ndarray]:
         return {
