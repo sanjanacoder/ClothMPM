@@ -81,7 +81,7 @@ def sample_drape_clip(rng: np.random.Generator, base: dict, seed: int) -> ClipSp
         sphere_radius_m=r,
         pinned_corner_indices=[],
         wind_force_n=(0.0, 0.0, 0.0),
-        log_every_substeps=10,
+        log_every_substeps=int(base["mpm"]["substeps_per_log"]),
     )
 
 
@@ -104,7 +104,7 @@ def sample_wind_clip(rng: np.random.Generator, base: dict, seed: int,
         sphere_radius_m=0.05,
         pinned_corner_indices=pinned,
         wind_force_n=(fx, 0.0, fz),
-        log_every_substeps=10,
+        log_every_substeps=int(base["mpm"]["substeps_per_log"]),
     )
 
 
@@ -125,7 +125,7 @@ def sample_collision_clip(rng: np.random.Generator, base: dict, seed: int,
         sphere_radius_m=r,
         pinned_corner_indices=pinned,
         wind_force_n=(0.0, 0.0, 0.0),
-        log_every_substeps=10,
+        log_every_substeps=int(base["mpm"]["substeps_per_log"]),
     )
 
 
@@ -144,8 +144,12 @@ def cfg_for_clip(base_cfg: dict, spec: ClipSpec, smoke: bool) -> dict:
         cfg["backend"]["arch"] = "cpu"
         cfg["cloth"]["grid"] = [16, 16]
         cfg["mpm"]["grid_resolution"] = 32
-        cfg["mpm"]["dx_m"] = cfg["mpm"]["domain_size_m"] / cfg["mpm"]["grid_resolution"]
-        cfg["mpm"]["inv_dx"] = 1.0 / cfg["mpm"]["dx_m"]
+    # Derive grid spacing from resolution for both smoke and full runs. The base
+    # config ships dx_m/inv_dx as null (see configs/mpm.yaml); load_mpm_config
+    # only fills them when a path is passed, and run_one_clip passes a dict, so
+    # the full path must derive them here or the solver crashes on float(None).
+    cfg["mpm"]["dx_m"] = cfg["mpm"]["domain_size_m"] / cfg["mpm"]["grid_resolution"]
+    cfg["mpm"]["inv_dx"] = 1.0 / cfg["mpm"]["dx_m"]
     return cfg
 
 
@@ -231,9 +235,16 @@ def main():
     ap.add_argument("--out", default=str(ROOT / "data" / "cloth_trajectories"))
     ap.add_argument("--smoke", action="store_true",
                     help="Tiny CPU run (2 clips per scenario at 16x16) for schema verification.")
-    ap.add_argument("--n-drape", type=int, default=4000)
-    ap.add_argument("--n-wind", type=int, default=3000)
-    ap.add_argument("--n-collision", type=int, default=3000)
+    ap.add_argument("--n-drape", type=int, default=5000)
+    # Wind is deferred (default 0). At full 64x64/128^3 resolution a corner-pinned
+    # sheet under sustained wind has no reachable static equilibrium, drifts, and
+    # drives a membrane element into inversion (det F -> 0 -> <0), which the explicit
+    # co-rotational solver cannot integrate through -> hard crash. It is also a
+    # fallback-regime for the hybrid, not something the MPM-surrogate must learn.
+    # The sampler is kept for the stretch goal; pass --n-wind N to opt back in.
+    # See docs/wind-deferral.md and docs/datagen-validation-findings.md (issue 2).
+    ap.add_argument("--n-wind", type=int, default=0)
+    ap.add_argument("--n-collision", type=int, default=5000)
     ap.add_argument("--seeds-train", type=int, default=8,
                     help="Seeds 0..N-1 reserved for train (train_split assigned via clip_idx).")
     ap.add_argument("--limit", type=int, default=0,
