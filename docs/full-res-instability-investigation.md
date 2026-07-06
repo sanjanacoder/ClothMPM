@@ -14,10 +14,12 @@ a particle out of the grid. The trigger is **the hard contact projection at fine
 mesh resolution — now confirmed**: removing the sphere makes full-res free-fall
 stable, and with the sphere the crash fires the instant the cloth touches, even at
 low impact speed. It is **not** element inversion (four other root-causes were also
-tested and disproven). A damping probe shows **dissipation at contact stabilises
-it** (a fix exists in that family), but global damping strong enough also damps the
-free dynamics — so the refinement is contact-localised dissipation / soft contact,
-or implicit contact. No fix is committed.
+tested and disproven). A **validated CPU prototype fix** now exists:
+**contact-localised grid damping** (dissipate only within a band around the sphere +
+box colliders) lets a **full 10000-step full-res drape clip complete**, with
+free-flight dynamics untouched and all 42 tests green (see "Prototype fix" below).
+The open questions are fidelity (contact/settling frames become damped) and tuning —
+not whether it can be stabilised. Config-gated, default off.
 
 ## What works vs. what fails
 
@@ -93,6 +95,50 @@ enough to hold at contact also damps the free dynamics. That argues for a
 active) rather than global damping, or for implicit contact. Good news for the
 mentor: a fix exists in the "add dissipation at contact" family; the open question
 is doing it without polluting the free-flight dynamics that become training labels.
+
+## Prototype fix — contact-localised damping (VALIDATED, CPU + GPU)
+
+Building on the analysis above, a working prototype: **dissipate grid velocity only
+within a band around a collider** (sphere OR box face), so free-flight dynamics are
+untouched. Implemented in `grid_apply_constraints` (config-gated, `damp_factor`
+defaults to 1.0 = off, so baseline is unchanged):
+
+```
+near_collider = (dist_to_sphere < sphere_r + damp_band) or (near any box face)
+if near_collider: grid_v[I] *= damp_factor
+```
+
+**Result (64×64/128³, dt=1e-4, damp_factor=0.2, band=3 cells):** a **full 10000-step
+(1.0 s) drape clip completes clean** — the first full-res clip to do so.
+- Free-flight is **pure MPM, undamped**: `vmax` = g·t (→3.4 m/s at contact), *not*
+  capped like global damping.
+- Sphere contact (~step 3000) and floor contact (~step 4000) are absorbed; `vmax`
+  settles smoothly (3.8→2.3→…→~1) instead of blowing up.
+- **All 42 unit tests still pass** (fix is off by default).
+
+Minimised + GPU-validated (this pass):
+- **Both colliders must be covered** — a sphere-only band let the cloth's edges blow
+  up at the **box floor** (the crash just moved there). The band now covers sphere +
+  box faces.
+- **Damping is very light.** CPU threshold sweep: `damp_factor` 0.5/0.8/0.9/0.95 all
+  hold; **0.98 crashes**. Chose **0.9** (≈10 %/step at contact-band nodes, with
+  margin). Only within `band=3` cells of a collider; free-flight untouched.
+- **Validated on GPU (CUDA).** A Modal run of **2 drape + 3 collision** full-res
+  clips returned **5/5 OK** (the exact config that previously failed 6/6). Downloaded
+  clips are finite with correct schema (1000 frames × 4096 particles).
+- **Integration:** injected by `generate_dataset.cfg_for_clip` for **full-res clips
+  only** (constant `CONTACT_DAMP_FACTOR=0.9`); `mpm.yaml` and the 16×16 smoke/test
+  path stay at the pure baseline, so **all 42 tests pass**.
+
+Remaining caveats (for review):
+- **Fidelity:** contact/settling frames are damped (not pure MPM); the free-flight
+  bulk is untouched. Whether that label quality is acceptable is the key review
+  question. (Far better than global damping, which killed all dynamics.)
+- **The `F` label is still drifting** (issue ②/③ codimensional artifact): a
+  full-res collision clip has `det F` ranging ~0.01–1900 — the out-of-plane APIC
+  drift, *unrelated* to the crash. Positions/velocities/accelerations are clean;
+  the 3×3 `F` feature is not. Fixing `F` is separate solver work.
+- **Wind** still deferred (its unbounded drift is a different problem).
 
 ## Candidate fix directions (for the decision)
 

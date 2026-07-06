@@ -133,6 +133,12 @@ def sample_collision_clip(rng: np.random.Generator, base: dict, seed: int,
 # Single-clip generation
 # -----------------------------------------------------------------------------
 
+# Contact-localised damping for full-res clips (PROTOTYPE). CPU threshold: 0.95
+# holds, 0.98 crashes; 0.9 chosen for margin. 1.0 would disable it.
+CONTACT_DAMP_FACTOR = 0.9
+CONTACT_DAMP_BAND_CELLS = 3.0
+
+
 def cfg_for_clip(base_cfg: dict, spec: ClipSpec, smoke: bool) -> dict:
     cfg = deepcopy(base_cfg)
     cfg["determinism"]["seed"] = int(spec.seed)
@@ -144,6 +150,15 @@ def cfg_for_clip(base_cfg: dict, spec: ClipSpec, smoke: bool) -> dict:
         cfg["backend"]["arch"] = "cpu"
         cfg["cloth"]["grid"] = [16, 16]
         cfg["mpm"]["grid_resolution"] = 32
+    else:
+        # Contact-localised velocity damping (PROTOTYPE, pending review). At full
+        # 64x64/128^3 resolution the hard contact projection destabilises the fine
+        # explicit mesh at impact (see docs/full-res-instability-investigation.md);
+        # damping grid velocity within damp_band_cells of a collider absorbs it
+        # while leaving free-flight dynamics untouched. Applied only to full-res
+        # clips — the 16x16 smoke/test path is stable and stays at the pure baseline.
+        cfg["contact"]["damp_factor"] = CONTACT_DAMP_FACTOR
+        cfg["contact"]["damp_band_cells"] = CONTACT_DAMP_BAND_CELLS
     # Derive grid spacing from resolution for both smoke and full runs. The base
     # config ships dx_m/inv_dx as null (see configs/mpm.yaml); load_mpm_config
     # only fills them when a path is passed, and run_one_clip passes a dict, so

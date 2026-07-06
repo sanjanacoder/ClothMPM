@@ -193,6 +193,12 @@ class MPMClothSim:
         # Box margin (in grid cells) read from the shared contact module so the
         # kernel and the numpy fallback use the same value.
         box_margin = self._contact.box_margin_cells
+        # EXPERIMENTAL contact-localised damping (prototype fix for the full-res
+        # contact instability): dissipate grid velocity only within a band around
+        # the sphere, so free-flight dynamics elsewhere are untouched. damp_factor=1
+        # disables it (baseline). Tunable via cfg["contact"].
+        contact_damp_band = float(self.cfg["contact"].get("damp_band_cells", 3.0)) * dx
+        contact_damp = float(self.cfg["contact"].get("damp_factor", 1.0))
         # Lame parameters (linear co-rotational, isotropic;
         # warp/weft separation reduces to a single Young's modulus when equal).
         E = 0.5 * (d.young_warp + d.young_weft)
@@ -334,8 +340,9 @@ class MPMClothSim:
                     # Sphere collider (no-penetration projection)
                     pos = ti.Vector([I[0] * dx, I[1] * dx, I[2] * dx])
                     rel = pos - sphere_c
-                    if rel.norm() < sphere_r:
-                        n = rel.normalized()
+                    d_sphere = rel.norm()
+                    if d_sphere < sphere_r:
+                        n = rel / ti.max(d_sphere, 1e-9)
                         vn = grid_v[I].dot(n)
                         if vn < 0.0:
                             grid_v[I] -= vn * n
@@ -346,6 +353,16 @@ class MPMClothSim:
                     if I[1] > n_grid - box_margin and grid_v[I][1] > 0.0: grid_v[I][1] = 0.0
                     if I[2] < box_margin and grid_v[I][2] < 0.0: grid_v[I][2] = 0.0
                     if I[2] > n_grid - box_margin and grid_v[I][2] > 0.0: grid_v[I][2] = 0.0
+                    # Contact-localised damping (EXPERIMENTAL): absorb the impact
+                    # instability only near a collider (sphere OR box face); free-flight
+                    # nodes are untouched (contact_damp defaults to 1 = off).
+                    box_band = box_margin + 3
+                    near_collider = (d_sphere < sphere_r + contact_damp_band
+                        or I[0] < box_band or I[0] > n_grid - box_band
+                        or I[1] < box_band or I[1] > n_grid - box_band
+                        or I[2] < box_band or I[2] > n_grid - box_band)
+                    if near_collider:
+                        grid_v[I] *= contact_damp
 
         @ti.kernel
         def g2p():
