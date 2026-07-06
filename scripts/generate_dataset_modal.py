@@ -226,9 +226,14 @@ def write_manifest_to_volume(csv_text: str) -> None:
 @app.local_entrypoint()
 def main(
     smoke: bool = False,
-    n_drape: int = 4000,
-    n_wind: int = 3000,
-    n_collision: int = 3000,
+    n_drape: int = 5000,
+    # Wind deferred (default 0) to match scripts/generate_dataset.py: at full
+    # resolution the corner-pinned sheet inverts an element the explicit solver
+    # cannot integrate -> container crash. This is physics-level, NOT the
+    # arm64-only issue, so it would fail on CUDA too. Sampler kept: pass
+    # --n-wind N to opt in. See docs/wind-deferral.md.
+    n_wind: int = 0,
+    n_collision: int = 5000,
 ) -> None:
     """Build all ClipSpecs locally, fan out to Modal, collect results."""
     # Import samplers from the local copy of generate_dataset.py
