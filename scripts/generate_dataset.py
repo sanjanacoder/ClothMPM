@@ -72,6 +72,11 @@ def sample_drape_clip(rng: np.random.Generator, base: dict, seed: int) -> ClipSp
     cz = float(rng.uniform(0.85, 1.15))
     cy = float(rng.uniform(0.35, 0.5))
     r = float(rng.uniform(0.15, 0.25))
+    # Guarantee the cloth starts clear above the sphere. The sampled ranges can put
+    # the drop height below the sphere top (cy + r up to 0.75), spawning the cloth
+    # *inside* the collider -> immediate deep penetration -> instant contact
+    # instability (crashes at step 0, regardless of damping). Lift h if needed.
+    h = max(h, cy + r + 0.10)
     return ClipSpec(
         scenario="drape",
         seed=seed,

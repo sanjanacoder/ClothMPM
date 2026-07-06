@@ -104,6 +104,8 @@ app = modal.App("cloth-mpm-datagen")
     volumes={"/data": volume},
     timeout=600,                   # 10-min hard cap; full-res T4 finishes <2 min
     retries=1,                     # retry once on container failure
+    max_containers=10,             # workspace GPU cap (10 on current plan); larger
+                                   # batches run in waves rather than erroring
 )
 def generate_clip(
     spec_dict: dict[str, Any],
