@@ -56,17 +56,32 @@ autodiff), and probably implicit integration. Pragmatic alternatives: generate
 wind clips with the existing `ImplicitClothSim` (whole-scenario, not mid-clip, so
 labels stay self-consistent), or drop the wind scenario. **Decision deferred.**
 
-## ③ Full-res clips crash on macOS/arm64 CPU — platform limitation, NOT the sim
+## ③ Full-res crashes on ALL backends — contact-induced, not a platform bug
 
-Even a physically stable full-res drape clip (no wind, healthy state) SIGSEGVs
-nondeterministically (step ~1k–4k) inside Taichi's `launch_kernel`. It scales with
-grid size — the 16×16 smoke path runs 10000 steps fine; 64×64/128³ does not. This
-is a Taichi CPU/arm64 runtime issue, not the simulation.
+**Corrected twice.** First mislabelled "arm64-only" (disproven: a Modal GPU run
+crashed 6/6 with `CUDA_ERROR_ILLEGAL_ADDRESS`), then provisionally called "element
+inversion" (also disproven — see below). Full-resolution (64×64 cloth / 128³ grid)
+crashes on **both** CPU (SIGBUS) and CUDA (illegal address) for **every** scenario.
+16×16 is stable on both; 32×32 and 64×64 are not.
 
-Consequence: **full-resolution validation is not reliable on this Mac.** The
-16×16 CPU path works and caught ① and ②. The definitive full-res, full-duration
-check must run on the real target (CUDA) — i.e. the Modal GPU smoke test
-(6 clips, ~$0.10), which also confirms whether ③ is arm64-only.
+**Actual mechanism: contact-induced explicit-integration instability.** Full-res
+drape is stable in free-fall (`vmax` grows smoothly as g·t) and blows up **exactly
+at sphere contact** (~t=0.3 s). At the blow-up the culprit element is *at the sphere
+surface*, stretched σ_max≈3.2 with **σ_min≈0.98 — no inversion, no degeneracy**;
+`vmax` then grows exponentially (~1.24×/step) until a particle leaves the grid → OOB
+access. It is **not** inversion, **not** the autodiff-`ti.svd` reverse-grad (a
+closed-form polar gave an identical crash), **not** global CFL/`dt` (halving `dt`
+only delays to the same physical contact time), and **not** fixed by coarsening to
+32×32. Best-supported cause: the hard grid-velocity contact projection creating a
+sharp velocity discontinuity a fine explicit mesh can't absorb.
+
+The earlier "drape/collision are stable at full res" claim was under-tested (a
+probe stopped at 1500 steps, before the ~3000-step contact crash). They are NOT
+stable at 64×64.
+
+Consequence: **the production 64×64 config cannot generate any scenario with the
+current explicit solver, on any backend.** Full diagnostic journey + candidate
+fixes: `docs/full-res-instability-investigation.md`. **Paused for advisor input.**
 
 ## Tooling
 
@@ -79,17 +94,23 @@ fast 16×16 self-test; the full-res mode is limited by ③.
 ## Current tree state
 
 - **① `dx_m` fix**: kept (in `scripts/generate_dataset.py`; all 42 tests pass;
-  smoke regenerated clean). This alone unblocks the full path from crashing on
-  clip #1 on any backend.
-- **② wind**: no code change kept. The drag and closed-form-polar attempts were
-  reverted; `src/mpm_cloth.py` and `configs/mpm.yaml` are back to baseline.
+  smoke regenerated clean). Unblocks the full path from crashing on clip #1.
+- **② wind + ③ full-res inversion**: no solver code change kept. Drag, closed-form
+  polar, and `dt` reduction were all tried and reverted; `src/mpm_cloth.py` and
+  `configs/mpm.yaml` are at baseline. These are the SAME instability and are being
+  addressed by the solver fix (`docs/full-res-instability-investigation.md`).
+- **Modal path**: ported to Modal 1.x + system libs (works; validated the 16×16
+  smoke and surfaced the full-res crash on CUDA).
 - **Tooling**: `scripts/validate_edge_cases.py` harness kept.
 
 ## Recommended next step
 
-1. **Decide the wind scenario** (see ②): whole-scenario `ImplicitClothSim`, a real
-   codimensional-MPM/inversion-handling solver effort, or drop wind. This is a
-   design call, not a quick fix.
-2. Meanwhile, drape + collision are stable and generateable. A Modal GPU smoke
-   test (6 clips, ~$0.10) validates full res on CUDA and confirms whether ③ is
-   arm64-only — worth running for drape/collision regardless of the wind decision.
+**Paused for advisor input on the solver.** The blocker is the contact-induced
+full-res instability (③); the leading fix is contact robustness (soft/penalty +
+damping instead of hard velocity projection), with implicit integration and
+resolution/`dt` changes as alternatives. See `docs/full-res-instability-investigation.md`
+for the evidence, the four disproven hypotheses, and the candidate directions.
+
+Note: the committed generator default (drape + collision, wind deferred) is not yet
+viable at 64×64 — drape/collision also hit ③. Full-dataset generation is blocked on
+the solver decision. The 16×16 smoke path and all 42 tests remain green.
