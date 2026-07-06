@@ -64,6 +64,19 @@ image = (
         "pandas>=2.1",
         "pyyaml>=6.0",
     ])
+    # Taichi's native lib (taichi_python.so) links libX11 + GL even for headless
+    # runs; the CUDA base image doesn't ship them. Without these, `import taichi`
+    # fails with "libX11.so.6: cannot open shared object file".
+    .apt_install("libx11-6", "libgl1", "libglib2.0-0")
+    # Sync source into each container. Modal 1.x removed modal.Mount; local files
+    # now attach to the image. copy=False keeps them as runtime mounts, so local
+    # edits to the simulator/config apply without an image rebuild. These must be
+    # the final image layers.
+    .add_local_dir(str(ROOT / "src"), f"{REMOTE_ROOT}/src",
+                   ignore=["**/__pycache__", "**/*.pyc"])
+    .add_local_dir(str(ROOT / "scripts"), f"{REMOTE_ROOT}/scripts",
+                   ignore=["**/__pycache__", "**/*.pyc"])
+    .add_local_dir(str(ROOT / "configs"), f"{REMOTE_ROOT}/configs")
 )
 
 # ---------------------------------------------------------------------------
@@ -74,32 +87,6 @@ image = (
 # ---------------------------------------------------------------------------
 
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
-
-# ---------------------------------------------------------------------------
-# Source mount
-# ---------------------------------------------------------------------------
-# Syncs src/, scripts/, and configs/ from the local machine into each
-# container. Only .py and .yaml files are included; data/, .venv/, etc. are
-# excluded to keep the mount fast.
-# ---------------------------------------------------------------------------
-
-def _include(p: Path) -> bool:
-    """Return True for files that should be synced into the remote container."""
-    excluded_dirs = {
-        ".venv", "__pycache__", ".git", ".pytest_cache",
-        "notebooks", "results", "data",
-    }
-    return (
-        p.suffix in {".py", ".yaml"}
-        and not any(part in excluded_dirs for part in p.parts)
-    )
-
-
-src_mount = modal.Mount.from_local_dir(
-    ROOT,
-    remote_path=str(REMOTE_ROOT),
-    condition=_include,
-)
 
 # ---------------------------------------------------------------------------
 # App
@@ -114,7 +101,6 @@ app = modal.App("cloth-mpm-datagen")
 @app.function(
     image=image,
     gpu="T4",                      # change to "A10G" for ~3-4x speedup
-    mounts=[src_mount],
     volumes={"/data": volume},
     timeout=600,                   # 10-min hard cap; full-res T4 finishes <2 min
     retries=1,                     # retry once on container failure
@@ -209,7 +195,7 @@ def generate_clip(
 # Manifest writer — runs remotely so index.csv lives alongside the clips
 # ---------------------------------------------------------------------------
 
-@app.function(volumes={"/data": volume})
+@app.function(image=image, volumes={"/data": volume})
 def write_manifest_to_volume(csv_text: str) -> None:
     """Write the completed index.csv into the volume."""
     from pathlib import Path
