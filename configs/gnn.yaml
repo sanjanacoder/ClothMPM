@@ -1,0 +1,56 @@
+# MeshGraphNets-style GNN neural grid-update (M3 Model B).
+# Defaults locked W2 from MeshGraphNets (paper10) + GNS (paper9) + paper7. See docs/m1-paper-notes.md.
+
+model:
+  type: "gnn"
+  message_passing_steps: 5     # L=5: deliberate efficiency tradeoff vs MGN's L=15. Ablate at [3, 5, 10].
+  hidden_dim: 128              # latent size for nodes and edges; universal across paper7/9/10
+  encoder_mlp_hidden: [128, 128]
+  processor_mlp_hidden: [128, 128]
+  decoder_hidden: [128, 128]
+  norm: "layer"                # MGN/GNS/paper7 all use LayerNorm
+  activation: "relu"           # MGN uses ReLU; paper7 uses ReLU; switch to SiLU for ablation if needed
+  edge_features: ["rest_length", "current_length", "delta_pos", "rel_velocity"]   # mesh edges
+  world_edges:
+    enabled: true
+    radius_m: 0.05             # r_W from MGN FlagDynamic; rebuilt per step
+  node_features: ["v_history", "F", "f_ext", "contact_flag", "node_type"]
+  include_F: true              # keep the 9-dim deformation gradient in node features.
+                               # Set false (or pass --no-F) for thin-shell cloth, where
+                               # F is codimensional and det F drifts -> out-of-scope.
+  velocity_history_C: 5        # 5 past velocities (matches GNS C=5 and paper7 Tin=6)
+  output: "acceleration"
+
+train:
+  epochs: 30
+  batch_size: 4               # GNN batches are heavier; smaller clip count per batch
+  optimizer: "adam"           # MGN uses Adam, not AdamW
+  lr: 1.0e-4                  # MGN: exponential decay 1e-4 -> 1e-6 over 5M steps
+  lr_min: 1.0e-6
+  weight_decay: 0.0
+  scheduler: "cosine"
+  noise:
+    type: "random_walk"       # GNS / MGN trick — load-bearing for rollout stability
+    sigma_position_m: 3.0e-3  # MGN FlagDynamic value; tune on val rollout MSE
+  loss:
+    accel_l2: 1.0
+    energy_reg: 0.0           # ablation knob; default off
+  rollout_curriculum: [1, 2, 4, 8]    # teacher-forcing horizon, ramped during training
+
+data:
+  trajectory_dir: "data/cloth_trajectories"
+  scenarios_train: ["drape", "wind"]
+  scenarios_val:   ["drape", "wind", "collision"]
+  seeds_train: [0, 1, 2, 3, 4, 5, 6, 7]
+  seeds_val:   [100, 101, 102]
+  dt_s: 1.0e-3                 # must match mpm.yaml
+
+eval:
+  rollout_horizons_s: [0.25, 0.5, 1.0, 2.0, 5.0]
+  l2_threshold_m: 0.05         # tau (locked W2)
+
+run:
+  device: "cuda"
+  precision: "fp32"
+  seed: 42
+  ckpt_dir: "results/checkpoints/gnn"

@@ -1,0 +1,36 @@
+# Hybrid rollout config (M4). Defaults locked W2 from paper7 and the scope doc.
+
+neural:
+  config: "configs/mlp.yaml"     # default backbone; swap to gnn.yaml for ablation A1
+  ckpt: "results/checkpoints/mlp/best.pt"
+
+detector:
+  variant: "D2"                  # D1 | D2 | D3
+  features: ["cos_sim_a", "strain_rate", "contact_frac", "edge_len_change"]
+  cosine_window_steps: 10        # paper7 delta_t = 10; mean cos sim across two windows
+  threshold: 0.5                 # logistic-regression score threshold for D2; sweep in M4
+  d1_cosine_threshold: 0.8       # paper7 rc = 0.8 for the D1 baseline (ablation A2)
+  warmup_steps: 20               # need 2 windows of 10 steps before the cosine signal is valid
+  high_error_label_threshold_m: 0.10   # epsilon, must match configs/eval.yaml
+
+fallback:
+  mode: "F2"                     # F1 (full MPM) | F2 (implicit mass-spring) | F3 (residual). F2 default.
+
+eval:
+  scenarios: ["drape", "wind", "collision"]
+  seeds: [200, 201, 202, 203, 204]
+  rollout_steps: 5000            # 5 s at dt=1ms
+  metrics:
+    record_per_frame: true
+    record_per_particle_l2: true
+    record_chamfer: true
+    record_energy_drift: true
+
+sweep:
+  d1_cosine_thresholds: [0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]   # tighter sweep around paper7's rc=0.8
+  d2_thresholds: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+  fallback_modes: ["F1", "F2", "F3"]
+
+run:
+  device: "cuda"
+  seed: 42

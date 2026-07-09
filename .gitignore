@@ -39,3 +39,6 @@ wandb/
 *.pt
 *.pth
 *.ckpt
+
+# Downloaded full-res trajectory batches (multi-GB Modal volume pulls)
+data/fullres*/

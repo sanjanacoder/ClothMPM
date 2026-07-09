@@ -1,0 +1,51 @@
+# Per-particle MLP neural grid-update (M3 Model A).
+
+model:
+  type: "mlp"
+  k_ring: 1                    # 1-ring = 8 grid neighbors on a quad sheet
+  hidden_dims: [128, 128, 128]
+  activation: "silu"
+  norm: "layer"
+  output: "acceleration"       # alternative: "delta_velocity"
+
+features:
+  per_particle: ["x", "v_history", "F", "f_ext"]   # raw inputs
+  velocity_history_C: 5                    # 5 past velocities (paper7 Tin=6, GNS C=5)
+  normalize: true                          # zero-mean / unit-std per channel from training stats
+  include_F: true                          # keep the 9-dim deformation gradient in the
+                                           # feature vector. Set false (or pass --no-F) for
+                                           # thin-shell cloth, where F is codimensional and
+                                           # det F drifts -> out-of-scope. feature_dim 30->21.
+
+train:
+  epochs: 30
+  batch_size: 8                # 8 trajectory clips per batch
+  optimizer: "adamw"
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  scheduler: "cosine"
+  noise:
+    type: "random_walk"        # GNS / MGN trick (paper9 / paper10) — same scheme for MLP for fair compare
+    sigma_position_m: 3.0e-3   # MGN FlagDynamic value
+  loss:
+    accel_l2: 1.0
+    energy_reg: 0.0            # ablation knob; default off
+  rollout_curriculum: [1, 2, 4, 8]    # teacher-forcing horizon, ramped during training
+
+data:
+  trajectory_dir: "data/cloth_trajectories"
+  scenarios_train: ["drape", "wind"]
+  scenarios_val:   ["drape", "wind", "collision"]
+  seeds_train: [0, 1, 2, 3, 4, 5, 6, 7]
+  seeds_val:   [100, 101, 102]
+  dt_s: 1.0e-3                 # must match mpm.yaml
+
+eval:
+  rollout_horizons_s: [0.25, 0.5, 1.0, 2.0, 5.0]
+  l2_threshold_m: 0.05         # tau for rollout horizon metric (locked W2)
+
+run:
+  device: "cuda"
+  precision: "fp32"
+  seed: 42
+  ckpt_dir: "results/checkpoints/mlp"

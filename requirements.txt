@@ -1,6 +1,6 @@
-# Milestone 2 — MPM Reference, Fallback & Dataset
-# Target: Google Colab T4 (CUDA 12.x, Python 3.10/3.11) or local CPU dev
-# ML stack (torch, torch-geometric, scikit-learn, imageio, tqdm) is added in M3+.
+# Hybrid Neural-MPM for Cloth — pinned dependencies
+# Target: Google Colab T4 (CUDA 12.x, Python 3.10/3.11)
+# Verify versions on first install; update this file once a working set is confirmed in M2.
 
 # Physics backend (Taichi MLS-MPM)
 # Switched from NVIDIA Warp during E3: Warp 1.13 dropped warp.sim and ships no
@@ -8,12 +8,27 @@
 # maps almost 1:1 to our cloth. See docs/m2-stack-note.md.
 taichi>=1.7,<2.0
 
+# ML core
+# Note: torch >=2.6 is required on Python 3.13. On Colab T4 (Python 3.10/3.11)
+# any 2.2+ build with CUDA support works.
+torch>=2.6
+torchvision>=0.21
+
+# Graph neural networks (M3 GNN baseline)
+# torch-geometric is installed via its own index in Colab; keep unpinned-here, document install command in README.
+torch-geometric>=2.5
+
 # Data, configs, plotting
 numpy>=1.26,<2.2
-scipy>=1.11          # scipy.sparse used in cloth_implicit.py (Baraff-Witkin PCG)
-pandas>=2.1          # eval harness CSV output and dataset manifest
-pyyaml>=6.0          # config loading in mpm_cloth.py, cloth_implicit.py, eval.py
-matplotlib>=3.8      # sanity plots in notebooks/00-mpm-baseline.ipynb
+scipy>=1.11
+pandas>=2.1
+pyyaml>=6.0
+matplotlib>=3.8
+imageio[ffmpeg]>=2.34
+tqdm>=4.66
+
+# Eval / analysis
+scikit-learn>=1.4   # logistic regression detector D2, AUROC
 
 # Notebooks (Colab provides these, but pin for local dev)
 jupyter>=1.0
