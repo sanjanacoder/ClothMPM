@@ -1,0 +1,13 @@
+model,scenario,seed,finite,horizon_s,l2_at_50,l2_at_200,l2_final,energy_drift
+mlp,drape,0,True,0.098,0.0126,0.2405,1.404,382.862
+mlp,drape,3,True,0.098,0.0126,0.2339,1.3504,743.168
+mlp,drape,1,True,0.098,0.0126,0.2329,1.4055,322.337
+mlp,collision,200000,True,0.098,0.0125,0.2412,1.5531,2.254
+mlp,collision,200002,True,0.098,0.0125,0.2412,1.548,2.273
+mlp,collision,200001,True,0.098,0.0125,0.2412,1.5478,2.403
+gnn,drape,0,True,0.1,0.0124,0.1969,0.6381,0.991
+gnn,drape,3,True,0.1,0.0124,0.1904,0.583,0.982
+gnn,drape,1,True,0.1,0.0124,0.1893,0.6422,0.992
+gnn,collision,200000,True,0.1,0.0124,0.1976,0.7756,1.0
+gnn,collision,200002,True,0.1,0.0124,0.1976,0.771,1.0
+gnn,collision,200001,True,0.1,0.0124,0.1976,0.7703,1.0
