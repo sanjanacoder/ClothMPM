@@ -146,8 +146,7 @@ def generate_clip(
         # Prepend "data/" to match the path format in generate_dataset.py (relative to ROOT)
         rel = "data/" + str(path.relative_to(Path("/data")))
 
-        print(f"[OK] {spec.scenario} seed={spec.seed} idx={idx_in_scenario} {wall:.1f}s")
-        return {
+        row = {
             "scenario": spec.scenario,
             "seed": spec.seed,
             "clip_idx": idx_in_scenario,
@@ -167,6 +166,16 @@ def generate_clip(
             "wall_s": wall,
             "status": "OK",
         }
+        # Write a per-clip manifest-row sidecar next to the .npz and commit, so
+        # the full index.csv can be rebuilt from the volume alone -- no need for
+        # the client to collect .spawn() results (which are fire-and-forget).
+        import json as _json
+        sidecar = path.with_name(path.stem + ".row.json")
+        sidecar.write_text(_json.dumps(row))
+        volume.commit()
+
+        print(f"[OK] {spec.scenario} seed={spec.seed} idx={idx_in_scenario} {wall:.1f}s")
+        return row
 
     except Exception as exc:
         print(f"[ERROR] {spec.scenario} seed={spec.seed}: {exc}")
@@ -207,6 +216,35 @@ def write_manifest_to_volume(csv_text: str) -> None:
     print(f"Manifest written → {out}  ({len(csv_text.splitlines())} rows)")
 
 
+@app.function(image=image, volumes={"/data": volume}, timeout=1800)
+def rebuild_manifest_from_volume() -> dict[str, Any]:
+    """Assemble index.csv from the per-clip *.row.json sidecars on the volume.
+
+    Decouples the manifest from the client: since generation uses .spawn()
+    (fire-and-forget), results aren't collected locally. Each clip left a row
+    sidecar; here we concatenate them. Idempotent -- safe to re-run any time.
+    """
+    import json
+    from pathlib import Path
+
+    import pandas as pd
+
+    volume.reload()
+    root = Path("/data/cloth_trajectories")
+    sidecars = sorted(root.glob("*/*.row.json"))
+    rows = [json.loads(p.read_text()) for p in sidecars]
+    if not rows:
+        print("no *.row.json sidecars found")
+        return {"n": 0}
+    df = pd.DataFrame(rows).sort_values(["scenario", "seed"]).reset_index(drop=True)
+    out = root / "index.csv"
+    out.write_text(df.to_csv(index=False))
+    volume.commit()
+    by = df.groupby("scenario").size().to_dict()
+    print(f"Manifest rebuilt → {out}  ({len(df)} clips: {by})")
+    return {"n": int(len(df)), "by_scenario": {k: int(v) for k, v in by.items()}}
+
+
 # ---------------------------------------------------------------------------
 # Local entrypoint
 # ---------------------------------------------------------------------------
@@ -222,8 +260,20 @@ def main(
     # --n-wind N to opt in. See docs/wind-deferral.md.
     n_wind: int = 0,
     n_collision: int = 5000,
+    rebuild_only: bool = False,
 ) -> None:
-    """Build all ClipSpecs locally, fan out to Modal, collect results."""
+    """Spawn all clips fire-and-forget (robust to client disconnect), then
+    (separately) rebuild index.csv from the volume. Run with `modal run
+    --detach` so the app keeps processing after this entrypoint returns.
+
+    --rebuild-only: skip generation, just assemble index.csv from the per-clip
+    *.row.json sidecars already on the volume.
+    """
+    if rebuild_only:
+        res = rebuild_manifest_from_volume.remote()
+        print(f"Manifest rebuilt: {res}")
+        return
+
     # Import samplers from the local copy of generate_dataset.py
     sys.path.insert(0, str(ROOT / "scripts"))
     from generate_dataset import (
@@ -262,55 +312,28 @@ def main(
             tasks.append((asdict(spec), smoke, i))
 
     n_total = len(tasks)
-    print(f"Dispatching {n_total} clips to Modal  "
+    print(f"Spawning {n_total} clips fire-and-forget  "
           f"({counts['drape']} drape / {counts['wind']} wind / {counts['collision']} collision)")
 
-    # Fan out — Modal runs up to 100 containers concurrently by default.
-    # order_outputs=False lets results stream in as they complete rather than
-    # waiting for the slowest container in each batch.
-    rows: list[dict[str, Any]] = []
-    n_ok = n_err = 0
-    report_every = max(1, n_total // 20)   # log progress ~20 times
-
-    for row in generate_clip.starmap(tasks, order_outputs=False):
-        if row["status"] == "OK":
-            n_ok += 1
-        else:
-            n_err += 1
-        rows.append(row)
-        done = n_ok + n_err
-        if done % report_every == 0 or done == n_total:
-            print(f"  {done:>5}/{n_total}  ✓ {n_ok}  ✗ {n_err}")
-
-    # Write manifest locally (index.csv matches generate_dataset.py's format)
-    local_out = ROOT / "data" / "cloth_trajectories"
-    local_out.mkdir(parents=True, exist_ok=True)
-    df = pd.DataFrame(rows)
-    local_manifest = local_out / "index.csv"
-    df.to_csv(local_manifest, index=False)
-    print(f"\nLocal manifest  → {local_manifest}")
-
-    # Mirror index.csv into the volume so `modal volume get` fetches everything
-    write_manifest_to_volume.remote(df.to_csv(index=False))
-
-    # Summary
-    print(f"\n{'='*55}")
-    print(f"Results: {n_ok} OK / {n_err} errors / {n_total} total")
-    if n_err:
-        err_rows = df[df["status"] != "OK"][["scenario", "seed", "status"]]
-        print("\nFailed clips:")
-        print(err_rows.to_string(index=False))
+    # .spawn() enqueues each clip server-side and returns immediately -- the
+    # detached app processes them independently of this client, so a disconnect
+    # during the ~8h generation is harmless (unlike .starmap(), which Modal
+    # cancels when the client stops polling). The client only needs to survive
+    # this enqueue loop. Each clip writes its own .npz + row sidecar to the
+    # volume; the manifest is rebuilt afterward with --rebuild-only.
+    for spec_dict, sm, idx in tasks:
+        generate_clip.spawn(spec_dict, sm, idx)
+    print(f"Spawned {n_total} clips. They run server-side (needs `modal run --detach`).")
 
     print(f"""
 Next steps
 ----------
-1. Download clips (may take a few minutes for large datasets):
-     modal volume get {VOLUME_NAME} /data/cloth_trajectories ./data/cloth_trajectories
+1. Monitor:  modal app list   |   modal app logs <app-id>
+   (clips + row.json sidecars stream to the volume as they finish)
 
-2. Verify physics on a sample:
-     cd {ROOT}
-     .venv/bin/python -m pytest tests/test_dataset.py -v
+2. When generation is done, build the manifest from the volume:
+     modal run scripts/generate_dataset_modal.py --rebuild-only
 
-3. Re-run only failed clips (edit seed_base / counts as needed):
-     modal run scripts/generate_dataset_modal.py --n-drape 0 --n-wind 0 --n-collision 0
+3. Download a sample if needed:
+     modal volume get {VOLUME_NAME} cloth_trajectories/index.csv ./index.csv
 """)
