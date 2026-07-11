@@ -64,36 +64,54 @@ MMAP_DIR = "/data/fullres100_mmap"
 MMAP_MANIFEST = f"{MMAP_DIR}/index.csv"
 
 
-@app.function(image=image, volumes={"/data": volume}, timeout=3600)
-def prepare_mmap(force: bool = False) -> str:
-    """Convert the volume's .npz clips to the per-array .npy mmap store."""
+@app.function(image=image, volumes={"/data": volume}, timeout=14400)
+def prepare_mmap(mmap_subdir: str = "fullres100_mmap",
+                 scenarios: list[str] | None = None,
+                 limit: int = 0,
+                 force: bool = False) -> str:
+    """Convert the volume's .npz clips to a per-array .npy mmap store.
+
+    mmap_subdir: output dir under /data (keep datasets separate).
+    scenarios / limit: filter which clips to convert (e.g. drape-only, first N)
+    so a budget-fit training set can be built without materializing everything.
+    """
     import pandas as pd
 
     sys.path.insert(0, REMOTE_ROOT)
     sys.path.insert(0, f"{REMOTE_ROOT}/scripts")
     import npz_to_mmap
 
-    if Path(MMAP_MANIFEST).exists() and not force:
-        n = len(pd.read_csv(MMAP_MANIFEST))
-        print(f"mmap store already present ({n} clips) -> {MMAP_DIR}")
-        return MMAP_MANIFEST
+    mmap_dir = f"/data/{mmap_subdir}"
+    manifest = f"{mmap_dir}/index.csv"
+    if Path(manifest).exists() and not force:
+        n = len(pd.read_csv(manifest))
+        print(f"mmap store already present ({n} clips) -> {mmap_dir}")
+        return manifest
 
     # The volume manifest paths are "data/cloth_trajectories/..."; in-container
     # the files sit at /data/cloth_trajectories/... Rewrite to absolute so the
     # converter (and the trainer) resolve them regardless of ROOT.
     src_manifest = Path("/data/cloth_trajectories/index.csv")
     df = pd.read_csv(src_manifest)
+    df = df[df["status"] == "OK"]
+    if scenarios:
+        df = df[df["scenario"].isin(scenarios)]
+    if limit and limit > 0:
+        df = df.groupby("scenario").head(limit)
+    df = df.reset_index(drop=True)
     df["path"] = df["path"].map(lambda p: "/" + p if not p.startswith("/") else p)
     abs_manifest = Path("/tmp/index_abs.csv")
     df.to_csv(abs_manifest, index=False)
+    print(f"converting {len(df)} clips "
+          f"({df.groupby('scenario').size().to_dict()}) -> {mmap_dir}")
 
     # npz_to_mmap resolves ROOT/path; absolute paths make ROOT a no-op.
     npz_to_mmap.ROOT = Path("/")
-    npz_to_mmap.convert(abs_manifest, Path(MMAP_DIR), include_F=False,
+    npz_to_mmap.convert(abs_manifest, Path(mmap_dir), include_F=False,
                         scenarios=None)
     volume.commit()
-    print(f"mmap store built -> {MMAP_DIR}")
-    return MMAP_MANIFEST
+    print(f"mmap store built -> {mmap_dir}")
+    return manifest
 
 
 @app.function(image=image, gpu="T4", cpu=16.0, volumes={"/data": volume},
@@ -106,6 +124,8 @@ def train(
     smoke: bool = False,
     num_workers: int = 4,
     batch_size: int | None = None,
+    manifest: str = MMAP_MANIFEST,
+    max_train_frames: int = 0,
 ) -> str:
     """Run src.train from the mmap store on the GPU; persist checkpoints."""
     import os
@@ -119,7 +139,7 @@ def train(
     cmd = [
         sys.executable, "-u", "-m", "src.train",   # -u: unbuffered -> live logs
         "--config", config,
-        "--manifest", MMAP_MANIFEST,
+        "--manifest", manifest,
         "--no-F",
         "--out-root", "/data/results",
         "--name", name,
@@ -130,6 +150,10 @@ def train(
         # Bigger batches saturate the GPU: the MLP run was compute-bound with
         # ~11k tiny steps/epoch at batch 8. 64+ means far fewer, larger steps.
         cmd += ["--batch-size", str(batch_size)]
+    if max_train_frames and max_train_frames > 0:
+        # Budget-fit: cap frames (sampled across all clips) so training cost is
+        # decoupled from dataset size -- essential at 1000s of clips.
+        cmd += ["--max-train-frames", str(max_train_frames)]
     if scenarios:
         cmd += ["--scenarios", *scenarios]
     if smoke:
@@ -166,6 +190,10 @@ def main(
                                    # GPU from many cores (train fn reserves 16)
     batch_size: int = 64,          # bigger than the config's 8 -> fewer GPU steps
     gpu: str = "T4",               # "A10G"/"L4"/... for more compute
+    mmap_subdir: str = "fullres100_mmap",  # which mmap store to build/train on
+    prepare_limit: int = 0,        # cap clips/scenario when building the mmap store
+    max_train_frames: int = 0,     # budget-fit: cap frames sampled across clips
+    prepare_only: bool = False,    # build the mmap store and stop (verify first)
 ):
     scen = [s for s in scenarios.split(",") if s] or None
     if smoke:
@@ -173,16 +201,21 @@ def main(
         name = name if name != "mlp_noF_100clip" else "mlp_noF_smoke"
 
     print("== preparing mmap store ==")
-    manifest = prepare_mmap.remote(force=force_prepare)
+    manifest = prepare_mmap.remote(mmap_subdir=mmap_subdir, scenarios=scen,
+                                   limit=prepare_limit, force=force_prepare)
     print(f"manifest: {manifest}")
+    if prepare_only:
+        print("prepare_only: mmap store built; stopping before training.")
+        return
 
     print(f"== training ({'smoke' if smoke else 'full'}, epochs={epochs}, "
-          f"batch={batch_size}, gpu={gpu}) ==")
+          f"batch={batch_size}, gpu={gpu}, max_frames={max_train_frames}) ==")
     # with_options lets us pick the GPU class at call time without redefining
     # the function (decorator default is T4).
     train_fn = train.with_options(gpu=gpu) if gpu != "T4" else train
     kw = dict(config=config, scenarios=scen, epochs=epochs, name=name,
-              smoke=smoke, num_workers=num_workers, batch_size=batch_size)
+              smoke=smoke, num_workers=num_workers, batch_size=batch_size,
+              manifest=manifest, max_train_frames=max_train_frames)
 
     if smoke:
         # Short run: block and print the loss tail for immediate feedback.
