@@ -127,11 +127,24 @@ def generate_clip(
     # generate_dataset.py is a plain script with no Modal imports — safe to import
     from generate_dataset import ClipSpec, run_one_clip, save_clip
 
+    import json
+
     spec = ClipSpec(**spec_dict)
     base_cfg = yaml.safe_load(
         Path("/root/ClothMPM/configs/mpm.yaml").read_text()
     )
     out_dir = Path("/data/cloth_trajectories")
+
+    # Resume: skip the (expensive) sim if this clip was already generated. Seeds
+    # are deterministic, so an existing .npz + .row.json sidecar is complete and
+    # identical -- lets a re-run fill only the missing seeds.
+    name = f"clip_{spec.seed:06d}_{idx_in_scenario:06d}"
+    sub = out_dir / spec.scenario
+    npz_path = sub / f"{name}.npz"
+    sidecar = sub / f"{name}.row.json"
+    if npz_path.exists() and sidecar.exists():
+        print(f"[SKIP] {spec.scenario} seed={spec.seed} idx={idx_in_scenario} (present)")
+        return json.loads(sidecar.read_text())
 
     try:
         t0 = time.perf_counter()
@@ -217,6 +230,24 @@ def write_manifest_to_volume(csv_text: str) -> None:
 
 
 @app.function(image=image, volumes={"/data": volume}, timeout=1800)
+def existing_seeds() -> set[tuple[str, int]]:
+    """Return the (scenario, seed) pairs already generated on the volume, from
+    the per-clip *.row.json sidecars -- used to resume without re-generating."""
+    from pathlib import Path
+    volume.reload()
+    out: set[tuple[str, int]] = set()
+    for p in Path("/data/cloth_trajectories").glob("*/*.row.json"):
+        # filename: clip_{seed:06d}_{idx:06d}.row.json
+        try:
+            seed = int(p.stem.split("_")[1])
+            out.add((p.parent.name, seed))
+        except (IndexError, ValueError):
+            continue
+    print(f"existing_seeds: {len(out)} clips already on volume")
+    return out
+
+
+@app.function(image=image, volumes={"/data": volume}, timeout=1800)
 def rebuild_manifest_from_volume() -> dict[str, Any]:
     """Assemble index.csv from the per-clip *.row.json sidecars on the volume.
 
@@ -261,6 +292,7 @@ def main(
     n_wind: int = 0,
     n_collision: int = 5000,
     rebuild_only: bool = False,
+    force_regen: bool = False,     # re-generate even seeds already on the volume
 ) -> None:
     """Spawn all clips fire-and-forget (robust to client disconnect), then
     (separately) rebuild index.csv from the volume. Run with `modal run
@@ -310,6 +342,17 @@ def main(
             else:
                 spec = sample_collision_clip(rng, base_cfg, seed, gx, gy)
             tasks.append((asdict(spec), smoke, i))
+
+    # Resume: skip seeds already on the volume so a re-run generates only the
+    # missing clips. Filtering here (client-side) avoids even starting a GPU
+    # container for clips that already exist.
+    if not smoke and not force_regen:
+        existing = existing_seeds.remote()
+        before = len(tasks)
+        tasks = [t for t in tasks
+                 if (t[0]["scenario"], t[0]["seed"]) not in existing]
+        print(f"Resume: {len(existing)} clips already on volume; "
+              f"skipping {before - len(tasks)}, generating {len(tasks)}.")
 
     n_total = len(tasks)
     print(f"Spawning {n_total} clips fire-and-forget  "
