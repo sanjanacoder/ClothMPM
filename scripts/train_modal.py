@@ -127,6 +127,7 @@ def train(
     manifest: str = MMAP_MANIFEST,
     max_train_frames: int = 0,
     noise_sigma: float = 0.0,
+    window: int = 1,
 ) -> str:
     """Run src.train from the mmap store on the GPU; persist checkpoints."""
     import os
@@ -157,6 +158,8 @@ def train(
         cmd += ["--max-train-frames", str(max_train_frames)]
     if noise_sigma and noise_sigma > 0:
         cmd += ["--noise-sigma", str(noise_sigma)]
+    if window and window > 1:
+        cmd += ["--window", str(window)]
     if scenarios:
         cmd += ["--scenarios", *scenarios]
     if smoke:
@@ -198,6 +201,7 @@ def main(
     max_train_frames: int = 0,     # budget-fit: cap frames sampled across clips
     prepare_only: bool = False,    # build the mmap store and stop (verify first)
     noise_sigma: float = 0.0,      # GNS/MGN train-noise for rollout drift-recovery
+    window: int = 1,               # pushforward unroll horizon (1 = one-step)
 ):
     scen = [s for s in scenarios.split(",") if s] or None
     if smoke:
@@ -220,7 +224,7 @@ def main(
     kw = dict(config=config, scenarios=scen, epochs=epochs, name=name,
               smoke=smoke, num_workers=num_workers, batch_size=batch_size,
               manifest=manifest, max_train_frames=max_train_frames,
-              noise_sigma=noise_sigma)
+              noise_sigma=noise_sigma, window=window)
 
     if smoke:
         # Short run: block and print the loss tail for immediate feedback.

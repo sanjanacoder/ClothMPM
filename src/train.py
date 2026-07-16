@@ -1,8 +1,11 @@
 """Training loop for the neural grid-update models (M3).
 
-Trains an MLPSolver (or GNNSolver in E6) on per-particle acceleration from
-saved MPM trajectory clips. One-step teacher forcing only in this file; the
-rollout-curriculum extension wires up in M3/W6.
+Trains an MLPSolver (or GNNSolver) on per-particle acceleration from saved MPM
+trajectory clips. Supports one-step teacher forcing (default) and, with
+--window>1, pushforward/short-unroll training: the model is unrolled K steps on
+its own predictions (K ramped by the rollout curriculum) so it learns to correct
+model-generated states -- the fix for rollout error compounding (see
+docs/rollout-scaling-finding.md). --noise-sigma adds GNS/MGN input noise.
 
 Run via:
   python -m src.train --config configs/mlp.yaml --manifest path/to/index.csv
@@ -29,6 +32,8 @@ from torch import nn
 from torch.utils.data import DataLoader, Subset
 
 from src.data import (NormalizationStats, TrajectoryDataset,
+                      assemble_edge_features, assemble_features,
+                      assemble_node_features_for_gnn, build_kring_index,
                       fit_normalization_stats)
 from src.neural_solver import build_solver
 
@@ -86,6 +91,74 @@ def _forward(model: nn.Module, batch, device: torch.device, model_kind: str):
                  edge_feat.reshape(B * E, edge_feat.shape[-1]),
                  ei.permute(1, 0, 2).reshape(2, B * E))
     return pred, target.reshape(B * N, 3)
+
+
+def _unroll(model, batch, device, model_kind, stats, kring, dt, K, include_F):
+    """Pushforward / short-unroll: from the initial state, predict acceleration,
+    integrate (semi-implicit Euler), and feed the model its OWN resulting state
+    for K steps -- so it learns to correct model-generated (drifted) states, the
+    fix for rollout error compounding. Loss = normalized-accel MSE at each step
+    vs the true acceleration; gradients flow through the integration chain.
+
+    K=1 reduces to one-step from the true initial state (used for validation).
+    Loops over the batch and reuses the same assembly/model calls as the
+    one-step path (correctness over speed; ~K x the one-step cost).
+    """
+    x0 = batch["x0"].to(device)             # (B, N, 3)
+    v0 = batch["v_hist0"].to(device)        # (B, N, C, 3)
+    a_win = batch["a_win"].to(device)       # (B, window, N, 3)  un-normalized
+    fm, fs = stats.feat_mean.to(device), stats.feat_std.to(device)
+    tm, ts = stats.target_mean.to(device), stats.target_std.to(device)
+    em = stats.edge_mean.to(device) if stats.edge_mean is not None else None
+    es = stats.edge_std.to(device) if stats.edge_std is not None else None
+    kring = kring.to(device)
+    B, N, _ = x0.shape
+    f_ext = torch.zeros(N, 3, device=device)
+    F_id = torch.eye(3, device=device).expand(N, 3, 3).contiguous()
+    ei = batch["edge_index"][0].to(device) if model_kind == "gnn" else None
+
+    loss = x0.new_zeros(())
+    accel_l2 = []
+    n = 0
+    for b in range(B):
+        x, vh = x0[b], v0[b]                 # (N,3), (N,C,3)
+        for k in range(K):
+            if model_kind == "mlp":
+                feats = assemble_features(x, vh, F_id, f_ext, kring,
+                                          include_F=include_F)
+                pred_n = model(((feats - fm) / fs).unsqueeze(0)).squeeze(0)
+            else:
+                node = assemble_node_features_for_gnn(
+                    x, vh, F_id, f_ext, mean_center=True, include_F=include_F)
+                edge = assemble_edge_features(x, ei)
+                node_n = (node - fm) / fs
+                edge_n = (edge - em) / es if em is not None else edge
+                pred_n = model(node_n, edge_n, ei)
+            tgt_n = (a_win[b, k] - tm) / ts
+            loss = loss + nn.functional.mse_loss(pred_n, tgt_n)
+            accel_l2.append(((pred_n * ts) - (tgt_n * ts)).pow(2).sum(-1).sqrt().mean().item())
+            n += 1
+            # semi-implicit Euler on the model's own (un-normalized) accel
+            a_pred = pred_n * ts + tm
+            v_new = vh[:, -1] + dt * a_pred
+            x = x + dt * v_new
+            vh = torch.cat([vh[:, 1:], v_new.unsqueeze(1)], dim=1)
+    return loss / n, float(np.mean(accel_l2))
+
+
+def _evaluate_unroll(model, loader, device, stats, model_kind, unroll_kw):
+    """Validation for pushforward mode: one-step (K=1) accel error on the clean
+    windowed val set (no drift, comparable across arms)."""
+    model.eval()
+    losses, accel = [], []
+    with torch.no_grad():
+        for batch in loader:
+            loss, a_l2 = _unroll(model, batch, device, model_kind, stats,
+                                 K=1, **unroll_kw)
+            losses.append(loss.item())
+            accel.append(a_l2)
+    return {"val_mse_norm": float(np.mean(losses)),
+            "val_accel_l2_m_per_s2": float(np.mean(accel))}
 
 
 def evaluate(model: nn.Module, loader: DataLoader, device: torch.device,
@@ -154,6 +227,10 @@ def main():
     ap.add_argument("--noise-sigma", type=float, default=0.0,
                     help="GNS/MGN random-walk velocity noise (train only) to "
                          "teach rollout drift-recovery. 0 = off. Sweep this.")
+    ap.add_argument("--window", type=int, default=1,
+                    help="Pushforward/unroll horizon (max steps unrolled on the "
+                         "model's own predictions). 1 = one-step. The rollout "
+                         "curriculum ramps K up to this each run.")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(Path(args.config).read_text())
@@ -205,20 +282,29 @@ def main():
     # split seed, so val is genuinely held-out from train.
     print(f"noise_sigma={args.noise_sigma}")
 
-    def _make_ds(noise: float):
-        d = TrajectoryDataset(
-            args.manifest, scenarios=args.scenarios, velocity_history_C=C,
-            stats=stats, mode=model_kind, include_F=include_F, noise_sigma=noise)
-        if args.max_train_frames > 0 and len(d) > args.max_train_frames:
-            idx = np.linspace(0, len(d) - 1, args.max_train_frames).astype(int)
-            d = Subset(d, idx.tolist())
-        return d
+    # window>1 -> pushforward: train + val both use the windowed dataset (same
+    # frames/split), the trainer unrolls K steps on the model's own predictions.
+    print(f"noise_sigma={args.noise_sigma}  window={args.window}")
 
-    ds_noisy = _make_ds(args.noise_sigma)
-    ds_clean = _make_ds(0.0) if args.noise_sigma > 0 else ds_noisy
+    def _make_ds(noise: float):
+        base = TrajectoryDataset(
+            args.manifest, scenarios=args.scenarios, velocity_history_C=C,
+            stats=stats, mode=model_kind, include_F=include_F, noise_sigma=noise,
+            window=args.window)
+        d = base
+        if args.max_train_frames > 0 and len(base) > args.max_train_frames:
+            idx = np.linspace(0, len(base) - 1, args.max_train_frames).astype(int)
+            d = Subset(base, idx.tolist())
+        return d, base
+
+    ds_noisy, base_noisy = _make_ds(args.noise_sigma)
+    ds_clean, _ = _make_ds(0.0) if args.noise_sigma > 0 else (ds_noisy, base_noisy)
     seed = int(cfg["run"]["seed"])
     train_set, _ = train_val_split(ds_noisy, val_frac=0.1, seed=seed)
     _, val_set = train_val_split(ds_clean, val_frac=0.1, seed=seed)
+    # Unroll needs the mesh k-ring, trajectory dt, and the acceleration stats.
+    unroll_kw = dict(kring=base_noisy.kring, dt=base_noisy.dt,
+                     include_F=include_F) if args.window > 1 else None
     # Parallel feature assembly: worker processes build upcoming batches while
     # the GPU trains the current one (the per-frame k-ring gather in
     # assemble_features is CPU-bound). Identical results; just overlaps I/O with
@@ -267,9 +353,16 @@ def main():
         horizon = rollout_horizon_for_epoch(epoch, epochs, schedule=rollout_schedule)
         model.train()
         train_losses = []
+        # In pushforward mode, the rollout curriculum ramps the unroll horizon K
+        # (capped by --window) -- start small, grow toward the window each run.
+        K = min(horizon, args.window) if args.window > 1 else 1
         for batch in train_loader:
-            pred, target = _forward(model, batch, device, model_kind)
-            loss = nn.functional.mse_loss(pred, target)
+            if unroll_kw is not None:
+                loss, _ = _unroll(model, batch, device, model_kind, stats,
+                                  K=K, **unroll_kw)
+            else:
+                pred, target = _forward(model, batch, device, model_kind)
+                loss = nn.functional.mse_loss(pred, target)
             optim.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -277,11 +370,15 @@ def main():
             train_losses.append(loss.item())
         sched.step()
         train_mse = float(np.mean(train_losses)) if train_losses else float("nan")
-        val_metrics = evaluate(model, val_loader, device, stats, model_kind=model_kind)
+        if unroll_kw is not None:
+            val_metrics = _evaluate_unroll(model, val_loader, device, stats,
+                                           model_kind, unroll_kw)
+        else:
+            val_metrics = evaluate(model, val_loader, device, stats, model_kind=model_kind)
         elapsed = time.perf_counter() - t_start
         row = {
             "epoch": epoch,
-            "horizon": horizon,
+            "horizon": K,   # applied unroll steps (was a no-op logged value before)
             "train_mse_norm": train_mse,
             "val_mse_norm": val_metrics["val_mse_norm"],
             "val_accel_l2_m_per_s2": val_metrics["val_accel_l2_m_per_s2"],
@@ -290,7 +387,7 @@ def main():
         }
         log_csv.writerow(row)
         log_f.flush()
-        print(f"[ep {epoch:3d} h={horizon}] train_mse={train_mse:.4f}  "
+        print(f"[ep {epoch:3d} h={K}] train_mse={train_mse:.4f}  "
               f"val_mse={val_metrics['val_mse_norm']:.4f}  "
               f"val_accel_l2={val_metrics['val_accel_l2_m_per_s2']:.3f} m/s^2  "
               f"lr={optim.param_groups[0]['lr']:.2e}  ({elapsed:.1f}s)",

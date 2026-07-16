@@ -280,7 +280,8 @@ class TrajectoryDataset(Dataset):
                  include_F: bool = True,
                  max_cached_clips: int | None = 16,
                  noise_sigma: float = 0.0,
-                 noise_correct_target: bool = False):
+                 noise_correct_target: bool = False,
+                 window: int = 1):
         """mode: 'mlp' returns (features (N,9,F), target (N,3));
                  'gnn' returns dict with node_feat / edge_feat / edge_index / target.
 
@@ -320,16 +321,21 @@ class TrajectoryDataset(Dataset):
         # the training distribution (robustness to slightly-off states).
         self.noise_sigma = float(noise_sigma)
         self.noise_correct_target = bool(noise_correct_target)
+        # window > 1 -> pushforward/unroll mode: __getitem__ returns an initial
+        # state + the next `window` true accelerations, so the trainer can unroll
+        # the model on its own predictions. See src/train.py.
+        self.window = int(window)
 
         if len(self.df) == 0:
             raise ValueError(f"manifest {manifest} has no clips after filters")
 
-        # Build the (frame_idx -> clip_idx, frame_in_clip) flat index
-        # while filtering frames that don't have C past velocity history yet.
+        # Build the (frame_idx -> clip_idx, frame_in_clip) flat index. Each usable
+        # frame needs C past frames for v_history and (window-1) future frames as
+        # unroll targets.
         starts, lengths = [], []
         for _, row in self.df.iterrows():
             T = int(row["n_frames"])
-            usable = max(0, T - self.C)   # need C past frames for v_history
+            usable = max(0, T - self.C - (self.window - 1))
             starts.append(usable)
             lengths.append(T)
         self._cumlens = np.cumsum(starts)  # cumulative usable frames
@@ -442,8 +448,25 @@ class TrajectoryDataset(Dataset):
 
         return x, v_history, F, f_ext, a
 
+    def get_window(self, clip_idx: int, frame: int):
+        """Unroll sample: the initial (x, v_history) at `frame` plus the true
+        (un-normalized) accelerations for the next `window` frames. The trainer
+        re-assembles features from the model's own predicted state each step, so
+        only raw state + targets are returned here (no pre-assembled features)."""
+        clip = self._load_clip(clip_idx)
+        x0 = self._frame(clip["x"][frame])                        # (N, 3)
+        v_hist0 = self._frame(
+            clip["v"][frame - self.C + 1: frame + 1]).permute(1, 0, 2)  # (N,C,3)
+        a_win = self._frame(
+            clip["a"][frame: frame + self.window])                # (window, N, 3)
+        return x0, v_hist0, a_win
+
     def __getitem__(self, idx: int):
         clip_idx, frame = self._locate(idx)
+        if self.window > 1:
+            x0, v_hist0, a_win = self.get_window(clip_idx, frame)
+            return {"x0": x0, "v_hist0": v_hist0, "a_win": a_win,
+                    "edge_index": self.edge_index}
         x, v_history, F, f_ext, a = self.get_state_at(clip_idx, frame)
         if self.mode == "mlp":
             feats = assemble_features(x, v_history, F, f_ext, self.kring,
