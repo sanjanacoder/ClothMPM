@@ -278,7 +278,9 @@ class TrajectoryDataset(Dataset):
                  mmap: bool = True,
                  mode: str = "mlp",
                  include_F: bool = True,
-                 max_cached_clips: int | None = 16):
+                 max_cached_clips: int | None = 16,
+                 noise_sigma: float = 0.0,
+                 noise_correct_target: bool = False):
         """mode: 'mlp' returns (features (N,9,F), target (N,3));
                  'gnn' returns dict with node_feat / edge_feat / edge_index / target.
 
@@ -308,6 +310,16 @@ class TrajectoryDataset(Dataset):
         self.mode = mode
         self.include_F = bool(include_F)
         self.max_cached_clips = max_cached_clips
+        # GNS/MGN training-noise: random-walk velocity noise (train only) so the
+        # model practices correcting states that are slightly off -> the fix for
+        # rollout error compounding. 0 = off. See docs/rollout-scaling-finding.md.
+        # noise_correct_target: subtract the exact one-step correction from the
+        # target accel (a -= n/dt). OFF by default: with accel targets and small
+        # dt (1e-3), /dt amplifies the correction ~1000x -> huge target noise
+        # from a ~unchanged input. Input-noise-only (correct=False) just widens
+        # the training distribution (robustness to slightly-off states).
+        self.noise_sigma = float(noise_sigma)
+        self.noise_correct_target = bool(noise_correct_target)
 
         if len(self.df) == 0:
             raise ValueError(f"manifest {manifest} has no clips after filters")
@@ -335,6 +347,9 @@ class TrajectoryDataset(Dataset):
         gx, gy = first_meta["grid"]
         self.grid_x, self.grid_y = int(gx), int(gy)
         self.N = self.grid_x * self.grid_y
+        # Trajectory dt (for the noise target correction): substep dt * log stride.
+        self.dt = float(first_meta.get("dt_s", 1e-4)) * int(
+            first_meta.get("log_every_substeps", 10))
         self.kring = build_kring_index(self.grid_x, self.grid_y, k=1)
         # Mesh-edge graph for the GNN path (built once, shared by every frame)
         self.edge_index = build_mesh_edge_index(self.grid_x, self.grid_y)
@@ -412,6 +427,19 @@ class TrajectoryDataset(Dataset):
             F = torch.eye(3).expand(x.shape[0], 3, 3).contiguous()
         a = self._frame(clip["a"][frame])
         f_ext = torch.zeros_like(x)  # placeholder until mpm_cloth exposes f_ext
+
+        if self.noise_sigma > 0.0:
+            # GNS/MGN random-walk velocity noise: perturb the velocity history so
+            # the input state is slightly off (as it would be mid-rollout). The
+            # accumulated noise on the *most recent* velocity, n, shifts what the
+            # next step needs; correct the acceleration target so a step from the
+            # noised state still lands on the true next state: a -= n / dt.
+            steps = torch.randn_like(v_history) * self.noise_sigma  # (N, C, 3)
+            walk = torch.cumsum(steps, dim=1)                        # random walk
+            v_history = v_history + walk
+            if self.noise_correct_target:
+                a = a - walk[:, -1, :] / self.dt
+
         return x, v_history, F, f_ext, a
 
     def __getitem__(self, idx: int):

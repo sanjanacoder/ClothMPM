@@ -151,6 +151,9 @@ def main():
                     help="Drop the deformation-gradient block from features "
                          "(thin-shell F is codimensional / drifts). Overrides "
                          "features.include_F in the config.")
+    ap.add_argument("--noise-sigma", type=float, default=0.0,
+                    help="GNS/MGN random-walk velocity noise (train only) to "
+                         "teach rollout drift-recovery. 0 = off. Sweep this.")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(Path(args.config).read_text())
@@ -197,19 +200,25 @@ def main():
     )
     print(f"feature_dim={stats.feature_dim}, target_std={stats.target_std.tolist()}")
 
-    # Wrap with normalization
-    ds = TrajectoryDataset(
-        args.manifest,
-        scenarios=args.scenarios,
-        velocity_history_C=C,
-        stats=stats,
-        mode=model_kind,
-        include_F=include_F,
-    )
-    if args.max_train_frames > 0 and len(ds) > args.max_train_frames:
-        idx = np.linspace(0, len(ds) - 1, args.max_train_frames).astype(int)
-        ds = Subset(ds, idx.tolist())
-    train_set, val_set = train_val_split(ds, val_frac=0.1, seed=int(cfg["run"]["seed"]))
+    # Two normalized views of the same data: the train set gets GNS/MGN velocity
+    # noise (drift-recovery), val stays clean. Same underlying frames + same
+    # split seed, so val is genuinely held-out from train.
+    print(f"noise_sigma={args.noise_sigma}")
+
+    def _make_ds(noise: float):
+        d = TrajectoryDataset(
+            args.manifest, scenarios=args.scenarios, velocity_history_C=C,
+            stats=stats, mode=model_kind, include_F=include_F, noise_sigma=noise)
+        if args.max_train_frames > 0 and len(d) > args.max_train_frames:
+            idx = np.linspace(0, len(d) - 1, args.max_train_frames).astype(int)
+            d = Subset(d, idx.tolist())
+        return d
+
+    ds_noisy = _make_ds(args.noise_sigma)
+    ds_clean = _make_ds(0.0) if args.noise_sigma > 0 else ds_noisy
+    seed = int(cfg["run"]["seed"])
+    train_set, _ = train_val_split(ds_noisy, val_frac=0.1, seed=seed)
+    _, val_set = train_val_split(ds_clean, val_frac=0.1, seed=seed)
     # Parallel feature assembly: worker processes build upcoming batches while
     # the GPU trains the current one (the per-frame k-ring gather in
     # assemble_features is CPU-bound). Identical results; just overlaps I/O with
