@@ -1,0 +1,4 @@
+model,scenario,seed,finite,horizon_s,l2_at_50,l2_at_200,l2_final,energy_drift
+gnn_drape_noise,drape,2000,True,0.1,0.0123,0.1902,0.621,0.999
+gnn_drape_noise,drape,2500,True,0.1,0.0123,0.1899,0.6531,1.0
+gnn_drape_noise,drape,3000,True,0.1,0.0123,0.1944,0.6062,0.998
