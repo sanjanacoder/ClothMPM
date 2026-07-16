@@ -1,0 +1,4 @@
+model,scenario,seed,finite,horizon_s,l2_at_50,l2_at_200,l2_final,energy_drift
+gnn_drape1500,drape,2000,True,0.1,0.0123,0.1897,0.6194,1.0
+gnn_drape1500,drape,2500,True,0.1,0.0123,0.1895,0.6514,1.0
+gnn_drape1500,drape,3000,True,0.1,0.0123,0.1939,0.6045,1.0
