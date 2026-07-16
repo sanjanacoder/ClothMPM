@@ -115,7 +115,7 @@ def prepare_mmap(mmap_subdir: str = "fullres100_mmap",
 
 
 @app.function(image=image, gpu="T4", cpu=16.0, volumes={"/data": volume},
-              timeout=28800)   # 8h: GNN 10 epochs ~6h; headroom for bigger runs
+              timeout=43200)   # 12h: pushforward unroll is ~Kx slower per epoch
 def train(
     config: str = "configs/mlp.yaml",
     scenarios: list[str] | None = None,
