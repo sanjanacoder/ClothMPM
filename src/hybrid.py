@@ -118,7 +118,8 @@ class HybridRollout:
               v0: np.ndarray | torch.Tensor | None = None,
               F0: np.ndarray | torch.Tensor | None = None,
               grid_x: int | None = None,
-              grid_y: int | None = None) -> None:
+              grid_y: int | None = None,
+              v_history: np.ndarray | torch.Tensor | None = None) -> None:
         x = torch.as_tensor(x0, dtype=torch.float32, device=self.device)
         N = x.shape[0]
         if v0 is None:
@@ -141,10 +142,18 @@ class HybridRollout:
         self.edge_index = build_mesh_edge_index(grid_x, grid_y).to(self.device)
         self.grid_x, self.grid_y = grid_x, grid_y
         self.x, self.v, self.F, self.f_ext = x, v, F, f_ext
-        # Pre-fill velocity history with v0 so the first feature build is valid
+        # Seed the velocity history. The model reads acceleration from the SLOPE
+        # of the recent velocities, so a flat history (v0 repeated) yields wrong
+        # predictions -- pass the true C-frame history when available.
         self._v_history.clear()
-        for _ in range(self.C):
-            self._v_history.append(v.clone())
+        if v_history is not None:
+            vh = torch.as_tensor(v_history, dtype=torch.float32, device=self.device)
+            assert vh.shape[0] == self.C, f"v_history needs {self.C} frames"
+            for i in range(self.C):
+                self._v_history.append(vh[i].clone())
+        else:
+            for _ in range(self.C):
+                self._v_history.append(v.clone())
         self._x_history.clear(); self._a_history.clear(); self._F_history.clear(); self._cf_history.clear()
         self._x_history.append(x.clone())
         self._a_history.append(torch.zeros_like(x))

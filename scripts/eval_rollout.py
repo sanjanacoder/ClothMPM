@@ -81,22 +81,28 @@ def eval_ckpt(name: str, ckpt_path: Path, manifest: Path,
         gx, gy = clip["meta"].item()["grid"]
         dt = float(clip["meta"].item()["dt_s"]) * int(clip["meta"].item()["log_every_substeps"])
         xref, vref = clip["x"], clip["v"]
-        steps = min(n_steps, xref.shape[0] - 1)
+        # Start at frame C-1 and seed the model's velocity history with the C
+        # true prior velocities. The model infers acceleration from the velocity
+        # *slope*, so a flat (v0-repeated) history yields wrong predictions and
+        # a spurious rollout collapse -- this is the correct initialization.
+        s0 = C - 1
+        steps = min(n_steps, xref.shape[0] - 1 - s0)
 
         ro = HybridRollout(model, model_kind, stats, dt=dt,
                            detector=_NoFallbackDetector(), threshold=float("inf"),
                            fallback_sim=None, history_C=C, include_F=include_F,
                            device="cpu")
-        ro.reset(xref[0], vref[0], grid_x=int(gx), grid_y=int(gy))
+        ro.reset(xref[s0], vref[s0], grid_x=int(gx), grid_y=int(gy),
+                 v_history=vref[s0 - C + 1: s0 + 1])
         out = ro.rollout(steps, log_every=1)
         pred_x, pred_v = out["x"], out["v"]                    # (steps, N, 3)
 
-        # per-frame positional L2 (pred step k corresponds to ref frame k+1)
-        l2 = np.array([per_particle_l2(pred_x[k], xref[k + 1]) for k in range(steps)])
+        # per-frame positional L2 (pred step k corresponds to ref frame s0+1+k)
+        l2 = np.array([per_particle_l2(pred_x[k], xref[s0 + 1 + k]) for k in range(steps)])
         finite = bool(np.isfinite(pred_x).all())
         horizon = rollout_horizon(l2, tau, dt)
         ke_p = kinetic_energy(pred_v[-1], mass_per)
-        ke_r = kinetic_energy(vref[steps], mass_per)
+        ke_r = kinetic_energy(vref[s0 + steps], mass_per)
         rows.append({
             "model": name, "scenario": r["scenario"], "seed": int(r["seed"]),
             "finite": finite,

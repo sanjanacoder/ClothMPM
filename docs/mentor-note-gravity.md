@@ -1,57 +1,75 @@
-# Mentor note — root cause of the rollout failure + one added ablation arm
+# Mentor note — the rollout "ceiling" was an evaluation bug, not a model limit
 
-*(Draft to send. Context: written after your ablation plan; adds the diagnosis
-we found while implementing it.)*
+*(Draft to send. Supersedes the earlier exposure-bias framing.)*
 
 ---
 
-Thanks — I've adopted the controlled ablation exactly as you laid out (fixed
-architecture/dataset/seeds/optimizer/eval-clips; report one-step accel error plus
-rollout position-vs-time, velocity error, energy drift, stable-horizon, and
-failure mode, separately for drape and collision; pushforward starting at 2–5
-steps and ramping; with implementation diagnostics for both the input
-perturbations and the pushforward gradient flow). Documented the 100-vs-1,500
-comparison first, before touching the trainer.
+Important update before we run the ablation — I found the actual cause of the
+rollout failure, and it changes the conclusion.
 
-While implementing it I ran the noise-only arm and did a deeper diagnostic, and
-I think we've found the specific mechanism — which refines (rather than
-contradicts) the exposure-bias picture and suggests one extra arm.
+**The rollout collapse was an evaluation-harness bug: the model's velocity
+history was being seeded incorrectly.** Our model infers acceleration largely
+from the *slope* of the recent velocities (the C-frame history). The rollout's
+`reset()` seeded a **flat** history (it repeated the initial velocity), which has
+zero slope — so the model saw a physically meaningless input and predicted
+roughly zero (even slightly upward) acceleration. That is why the "cloth doesn't
+fall" and why every model plateaued at the same ~100 ms horizon.
 
-**Noise-only arm:** no rollout improvement, and one-step got worse. More
-importantly, rollout is **invariant to one-step accuracy** across all three
-models so far (one-step 0.09 → 0.60, rollout l2\_final ≈ 0.62 for all). Random
-error compounding would predict better rollout from better one-step, so the
-drift looks **systematic**, not stochastic.
+**Direct evidence.** Querying the trained model on real reference states:
 
-**What the systematic error is:** the rolled-out cloth **does not fall under
-gravity**. The drift is 100% vertical, spatially uniform, and equals ½·g·t² — the
-predicted cloth hovers at its start height while the reference free-falls. It is
-**not** a cold-start artifact (warm-starting from mid-fall frames does not fix
-it; the cloth brakes to a near-stop regardless of initial velocity).
+| frame | true a_y | pred a_y (true history) | pred a_y (flat history = the bug) |
+|---|---|---|---|
+| 5 | −9.81 | **−9.79** | +0.98 |
+| 30 | −9.81 | **−9.80** | +1.48 |
+| 60 | −9.81 | **−9.81** | +2.34 |
+| 100 | −9.81 | **−9.81** | +3.35 |
 
-**Mechanism (quantitative):** the acceleration target's vertical std is
-**28.7 m/s²**, dominated by the rare, large accelerations at contact. Against
-that scale, gravity (−9.81) is only **−0.31 in normalized units**, and the mean
-is **−0.86 m/s²**. In rollout, on its own slightly-off states, the model
-regresses toward that near-zero mean → effective gravity ≈ **9%** → it falls
-~11× too slowly. This is exactly one item on your "deeper issues" list —
-**whether acceleration-only supervision is sufficient** — and it cleanly explains
-why dataset size, noise, and warm-starting all changed nothing.
+With the true history the model predicts gravity to two decimals; with the flat
+(seeded) history it predicts *upward*.
 
-**Proposed adjustment:** keep your 2×2 ablation as the backbone (it's the right
-way to attribute the effect of exposing the model to its own states), and add a
-**fifth arm — a gravity-residual target**: the network predicts `a − g`
-(internal forces) and we add `g` explicitly in the integrator. That makes
-free-fall exact by construction, so it directly tests whether the diagnosed
-normalization pathology is the binding constraint. It's cheap (~$13) and
-complements pushforward — if pushforward alone also removes the ceiling, we learn
-exposure was sufficient; if only the residual does, we learn the target
-parameterization was the issue; if both are needed, we learn both.
+**Effect of the fix.** Seeding the true C-frame history (same model, same
+held-out clips):
 
-Everything (the four evals, per-axis drift, warm-start, and normalization
-numbers) is in `docs/rollout-scaling-finding.md`. Happy to proceed with the
-five-arm ablation on the fixed drape1500 setup and report the full metric suite
-for drape and collision. Flagging one data limit: we have 3,720 drape but only
-141 collision clips, so I'd train fixed on drape1500 and evaluate rollout on
-held-out drape **and** the 141 collision clips (collision-out-of-training) for
-the per-scenario report, and defer the balanced set until the training fix lands.
+| seeding | positional L2 @ 200 steps | L2 @ ~395 steps |
+|---|---|---|
+| flat (bug) | 0.190 m | 0.591 m |
+| true history (fixed) | **0.009 m** | **0.186 m** |
+
+**~21× less drift at 200 steps** — the cloth now tracks the reference to ~9 mm
+out to 200 ms.
+
+**And the key reversal: with correct seeding, dataset scaling *does* help
+rollout — the opposite of what the broken harness showed.** Same held-out clips,
+corrected eval:
+
+| model | horizon | L2 @ 200 | L2_final | energy drift |
+|---|---|---|---|---|
+| pilot (100 clips) | 120 ms | 0.242 | 2.30 | 2785 (unstable) |
+| scaled (1,500 clips) | 236 ms | 0.023 | 0.249 | 45 |
+
+The seeding bug flattened this (both models "hovered," so both read ~0.62
+regardless of quality). Fixed, the 30× model has ~10× lower drift, ~2× longer
+horizon, ~60× less energy blow-up. So **more data substantially improves
+rollout, and the balanced 10k is re-justified.** The earlier "scaling doesn't
+help rollout" was an artifact of the bug.
+
+**What's actually left.** The scaled model still drifts ~0.25 m and energy-drifts
+~45× by ~400 steps, concentrated near contact (~300 ms). That is the real —
+and much smaller — remaining challenge, where more data and the
+pushforward/short-unroll training should help. I've kept pushforward implemented
+and verified (the diagnostic confirming noise reaches the inputs and gradients
+flow through the unroll still passes).
+
+**Proposed next step.** Rather than the full 5-arm noise/pushforward ablation
+against a bug, I'd:
+1. lock in the corrected evaluation (done; regression test added), re-report the
+   full metric suite (position/velocity/energy/horizon vs time) for the pilot and
+   scaled models on the fixed harness, and
+2. run a *targeted* pushforward experiment on the residual late-horizon/contact
+   drift only — which is now the real open question — and, if it helps, proceed
+   to the balanced 10k with the corrected setup.
+
+I'm sorry for the earlier over-confident diagnosis; the free model-query
+diagnostic you'd implicitly asked for (verify perturbations/gradients) is what
+surfaced this. Full details, evals, and the fix are in
+`docs/rollout-scaling-finding.md`.

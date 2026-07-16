@@ -1,11 +1,64 @@
 # Rollout bottleneck: scaling finding + root-cause diagnosis
 
+> **CORRECTION (supersedes the analysis below).** The rollout collapse was an
+> **evaluation-harness bug**, not a model/data/training limitation. The rollout
+> seeded a *flat* velocity history (`reset()` repeated `v0`); the model infers
+> acceleration from the velocity *slope*, so a flat history made it predict ≈0
+> (even upward) acceleration → the cloth "didn't fall." With the true C-frame
+> history seeded (`eval_rollout.py`, `HybridRollout.reset(v_history=...)`), the
+> **same** model predicts gravity to 2 decimals and rollout drift drops ~21× at
+> 200 steps (0.190 → 0.009 m). So the "scaling/noise don't help rollout" and
+> "gravity-normalization" conclusions below were all measured through the bug and
+> do **not** hold. The model has been fine throughout. The genuine remaining
+> issue is a much smaller *residual* late-rollout drift near contact (~0.19 m by
+> ~395 steps) — see the "Corrected results" section. The diagnostic chain below
+> is retained as the record of how we got here.
+
 Fixed across everything below: GNN architecture (847k params, message-passing
 L=5), `x, v → a` (no F), optimizer, seeds, and the evaluation clips (held-out
 drape seeds 2000/2500/3000, never in any training set). Rollout = pure-neural
 autoregressive (`scripts/eval_rollout.py`), 400 steps, semi-implicit Euler.
 
-## TL;DR
+## Corrected results (the seeding bug)
+
+Model queried on real reference states — true history vs the flat history the
+buggy `reset()` produced:
+
+| frame | true a_y | pred a_y (true history) | pred a_y (flat history = bug) |
+|---|---|---|---|
+| 5 | −9.81 | −9.79 | +0.98 |
+| 30 | −9.81 | −9.80 | +1.48 |
+| 60 | −9.81 | −9.81 | +2.34 |
+| 100 | −9.81 | −9.81 | +3.35 |
+
+Same model + held-out clips, rollout drift by seeding:
+
+| seeding | L2 @ 200 steps | L2 @ ~395 steps |
+|---|---|---|
+| flat (bug) | 0.190 m | 0.591 m |
+| true history (fixed) | **0.009 m** | **0.186 m** |
+
+**And with correct seeding, dataset scaling DOES help rollout (the opposite of
+the buggy conclusion below).** Held-out drape, corrected harness:
+
+| model | horizon (≤5 cm) | L2 @ 200 | L2_final (400) | energy drift |
+|---|---|---|---|---|
+| pilot (100 clips) | 120 ms | 0.242 | 2.30 | 2785 (unstable) |
+| scaled (1,500 clips, 30×) | **236 ms** | **0.023** | **0.249** | **45** |
+
+The seeding bug had *flattened* this comparison (both models "hovered," so both
+read ~0.62 regardless of quality). Fixed, the 30× model is ~10× lower drift,
+~2× longer horizon, ~60× less energy blow-up — so **more data substantially
+improves rollout, and the balanced 10k is justified**. Residual issues remain
+(scaled still drifts ~0.25 m and energy-drifts 45× by ~400 steps, concentrated
+near contact) — that is the real, smaller open problem, where pushforward and
+more data should help.
+
+Locked in: `HybridRollout.reset(v_history=...)`, `eval_rollout.py` seeds the true
+history and starts at frame C-1, and `tests/test_hybrid.py::
+test_reset_seeds_velocity_history` asserts the slope-dependence.
+
+## TL;DR (as originally written — now known to be measured through the bug)
 
 1. **Scaling the dataset 30× (100 → 1,500 drape clips) improved one-step
    accuracy ~3× but did not change rollout at all** — same horizon, positional

@@ -140,3 +140,25 @@ def test_hybrid_step_count_consistent(smoke_mlp_ckpt):
     assert len(out["rows"]) == 35
     assert out["x"].shape[0] == 7   # ceil(35 / 5)
     assert all(r["step"] == i + 1 for i, r in enumerate(out["rows"]))
+
+
+def test_reset_seeds_velocity_history(smoke_mlp_ckpt):
+    """The rollout must accept and use the true velocity history. The model
+    reads acceleration from the velocity *slope*, so a flat (v0-repeated)
+    history vs a real sloped one must give different predictions -- this is the
+    seeding bug that caused the spurious rollout collapse."""
+    h = _make_hybrid(smoke_mlp_ckpt, threshold=float("inf"))
+    x0, gx, gy = _make_initial_state()
+    N, C = x0.shape[0], h.C
+    # a sloped history (velocity ramping downward over the C frames)
+    vh = np.stack([np.full((N, 3), -0.02 * k, dtype=np.float32) for k in range(C)])
+    h.reset(x0=x0, v0=vh[-1], grid_x=gx, grid_y=gy, v_history=vh)
+    seeded = torch.stack(list(h._v_history)).numpy()
+    assert np.allclose(seeded, vh, atol=1e-6), "reset must seed the passed history"
+    a_sloped = h._neural_accel().detach().clone()
+
+    # default (flat) seeding repeats v0 -> zero slope -> different prediction
+    h.reset(x0=x0, v0=vh[-1], grid_x=gx, grid_y=gy)
+    a_flat = h._neural_accel().detach()
+    assert not torch.allclose(a_sloped, a_flat, atol=1e-4), \
+        "velocity-history slope must affect the predicted acceleration"
