@@ -1,75 +1,59 @@
-# Mentor note — the rollout "ceiling" was an evaluation bug, not a model limit
+# Mentor note — rollout resolved: a seeding bug + pushforward, and scaling helps
 
-*(Draft to send. Supersedes the earlier exposure-bias framing.)*
+*(Draft to send. Combines the seeding-bug discovery, the scaling reversal, and
+the pushforward result.)*
 
 ---
 
-Important update before we run the ablation — I found the actual cause of the
-rollout failure, and it changes the conclusion.
+Three connected results that resolve the rollout story.
 
-**The rollout collapse was an evaluation-harness bug: the model's velocity
-history was being seeded incorrectly.** Our model infers acceleration largely
-from the *slope* of the recent velocities (the C-frame history). The rollout's
-`reset()` seeded a **flat** history (it repeated the initial velocity), which has
-zero slope — so the model saw a physically meaningless input and predicted
-roughly zero (even slightly upward) acceleration. That is why the "cloth doesn't
-fall" and why every model plateaued at the same ~100 ms horizon.
+**1. The "~100 ms rollout ceiling" was an evaluation-harness bug, not a model or
+training limitation.** The rollout seeded a *flat* velocity history (`reset()`
+repeated the initial velocity). The model infers acceleration from the velocity
+*slope*, so a flat history made it predict ≈0 (even upward) acceleration — the
+cloth "didn't fall." Querying the trained model on real states, it predicts
+gravity to two decimals (−9.79…−9.81); on the flat history it predicts +0.98…
++3.35. Seeding the true C-frame history drops rollout drift ~21× at 200 steps
+(0.190 → 0.009 m, same model, held-out clips). So the earlier "scaling/noise
+don't help rollout" conclusions were all measured through this bug.
 
-**Direct evidence.** Querying the trained model on real reference states:
-
-| frame | true a_y | pred a_y (true history) | pred a_y (flat history = the bug) |
-|---|---|---|---|
-| 5 | −9.81 | **−9.79** | +0.98 |
-| 30 | −9.81 | **−9.80** | +1.48 |
-| 60 | −9.81 | **−9.81** | +2.34 |
-| 100 | −9.81 | **−9.81** | +3.35 |
-
-With the true history the model predicts gravity to two decimals; with the flat
-(seeded) history it predicts *upward*.
-
-**Effect of the fix.** Seeding the true C-frame history (same model, same
-held-out clips):
-
-| seeding | positional L2 @ 200 steps | L2 @ ~395 steps |
-|---|---|---|
-| flat (bug) | 0.190 m | 0.591 m |
-| true history (fixed) | **0.009 m** | **0.186 m** |
-
-**~21× less drift at 200 steps** — the cloth now tracks the reference to ~9 mm
-out to 200 ms.
-
-**And the key reversal: with correct seeding, dataset scaling *does* help
-rollout — the opposite of what the broken harness showed.** Same held-out clips,
-corrected eval:
+**2. With the corrected harness, dataset scaling clearly helps rollout — the
+opposite of the buggy conclusion — which re-justifies the 10k.** Held-out drape:
 
 | model | horizon | L2 @ 200 | L2_final | energy drift |
 |---|---|---|---|---|
 | pilot (100 clips) | 120 ms | 0.242 | 2.30 | 2785 (unstable) |
 | scaled (1,500 clips) | 236 ms | 0.023 | 0.249 | 45 |
 
-The seeding bug flattened this (both models "hovered," so both read ~0.62
-regardless of quality). Fixed, the 30× model has ~10× lower drift, ~2× longer
-horizon, ~60× less energy blow-up. So **more data substantially improves
-rollout, and the balanced 10k is re-justified.** The earlier "scaling doesn't
-help rollout" was an artifact of the bug.
+The bug had flattened both models to ~0.62 (both "hovering"), hiding the gap.
+30× data → ~10× less drift, ~2× longer horizon, ~60× less energy blow-up.
 
-**What's actually left.** The scaled model still drifts ~0.25 m and energy-drifts
-~45× by ~400 steps, concentrated near contact (~300 ms). That is the real —
-and much smaller — remaining challenge, where more data and the
-pushforward/short-unroll training should help. I've kept pushforward implemented
-and verified (the diagnostic confirming noise reaches the inputs and gradients
-flow through the unroll still passes).
+**3. Your pushforward arm works — it fixes the residual contact instability.**
+Same scaled setup with short-unroll training (curriculum ramped K to 5, per your
+"start 2–5 and increase"), evaluated on the corrected harness / same held-out
+clips:
 
-**Proposed next step.** Rather than the full 5-arm noise/pushforward ablation
-against a bug, I'd:
-1. lock in the corrected evaluation (done; regression test added), re-report the
-   full metric suite (position/velocity/energy/horizon vs time) for the pilot and
-   scaled models on the fixed harness, and
-2. run a *targeted* pushforward experiment on the residual late-horizon/contact
-   drift only — which is now the real open question — and, if it helps, proceed
-   to the balanced 10k with the corrected setup.
+| scaled GNN | L2_final (400) | energy drift |
+|---|---|---|
+| no pushforward | 0.249 | 45.1 |
+| + pushforward (K→5) | 0.219 | **0.92** |
 
-I'm sorry for the earlier over-confident diagnosis; the free model-query
-diagnostic you'd implicitly asked for (verify perturbations/gradients) is what
-surfaced this. Full details, evals, and the fix are in
+Energy drift collapses **45× → ~0.9** (near-perfect conservation); late positional
+drift improves ~12%. The early rollout (horizon, L2@200) is unchanged because the
+seeding fix already made it accurate — pushforward specifically stabilizes the
+*late/contact* phase, which is exactly the residual. And this is conservative:
+only K→5 and *half* the training frames (100k vs 200k), so larger unroll and full
+data should do more. (Implementation verified: the diagnostic confirms
+perturbations reach the inputs and gradients flow through every unroll step.)
+
+**Net.** Two independent fixes, each for a different part of the rollout: the
+seeding fix for the early free-fall phase, pushforward for the late/contact
+stability. Together the model now tracks accurately *and* conserves energy, and
+scaling helps. I'd propose: (1) generate the balanced 10k (now justified),
+(2) train the GNN with the corrected setup (real-history eval, pushforward),
+ramping the unroll horizon a bit further, and (3) proceed to the complexity
+detector / hybrid fallback (M4) — the residual contact frames are exactly what
+that stage is designed to catch.
+
+Full details, evals, per-axis drift, and the regression test are in
 `docs/rollout-scaling-finding.md`.

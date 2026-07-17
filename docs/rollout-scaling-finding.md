@@ -51,8 +51,25 @@ read ~0.62 regardless of quality). Fixed, the 30× model is ~10× lower drift,
 ~2× longer horizon, ~60× less energy blow-up — so **more data substantially
 improves rollout, and the balanced 10k is justified**. Residual issues remain
 (scaled still drifts ~0.25 m and energy-drifts 45× by ~400 steps, concentrated
-near contact) — that is the real, smaller open problem, where pushforward and
-more data should help.
+near contact) — that is the real, smaller open problem, addressed next.
+
+### Pushforward fixes the residual contact instability
+
+Same scaled setup + short-unroll (pushforward) training, curriculum ramping the
+unroll horizon K to 5 (`--window 5`), corrected harness / same held-out clips:
+
+| scaled GNN | L2_final (400) | energy drift |
+|---|---|---|
+| no pushforward | 0.249 | 45.1 |
+| + pushforward (K→5) | **0.219** | **0.92** |
+
+Energy drift collapses **45× → ~0.9** (near-perfect conservation), late drift
+−12%. Early rollout (horizon 236 ms, L2@200 0.023) unchanged — the seeding fix
+already made that accurate; pushforward stabilizes the *late/contact* phase.
+Conservative result (K→5, half the frames), so more unroll + full data should do
+more. Implemented in `src/train.py` (`--window`, `_unroll`); verified by
+`scripts/verify_pushforward.py` (perturbations reach inputs; gradients flow
+through every unroll step).
 
 Locked in: `HybridRollout.reset(v_history=...)`, `eval_rollout.py` seeds the true
 history and starts at frame C-1, and `tests/test_hybrid.py::
