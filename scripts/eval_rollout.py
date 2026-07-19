@@ -35,7 +35,8 @@ import sys
 sys.path.insert(0, str(ROOT))
 
 from src.data import NormalizationStats
-from src.eval import energy_drift, kinetic_energy, per_particle_l2, rollout_horizon
+from src.eval import (energy_drift, energy_drift_peak, kinetic_energy,
+                       per_particle_l2, rollout_horizon)
 from src.hybrid import HybridRollout
 from src.neural_solver import build_solver
 
@@ -101,8 +102,14 @@ def eval_ckpt(name: str, ckpt_path: Path, manifest: Path,
         l2 = np.array([per_particle_l2(pred_x[k], xref[s0 + 1 + k]) for k in range(steps)])
         finite = bool(np.isfinite(pred_x).all())
         horizon = rollout_horizon(l2, tau, dt)
-        ke_p = kinetic_energy(pred_v[-1], mass_per)
-        ke_r = kinetic_energy(vref[s0 + steps], mass_per)
+        # Kinetic-energy series over the rollout: final-frame drift plus a
+        # peak-normalized drift (well-conditioned when the reference settles or
+        # swings through a low-KE turning point, where the instantaneous ratio
+        # blows up -- e.g. pinned drape).
+        ke_p_series = np.array([kinetic_energy(pred_v[k], mass_per) for k in range(steps)])
+        ke_r_series = np.array([kinetic_energy(vref[s0 + 1 + k], mass_per) for k in range(steps)])
+        ke_p, ke_r = float(ke_p_series[-1]), float(ke_r_series[-1])
+        ke_r_peak = float(ke_r_series.max())
         rows.append({
             "model": name, "scenario": r["scenario"], "seed": int(r["seed"]),
             "finite": finite,
@@ -111,6 +118,10 @@ def eval_ckpt(name: str, ckpt_path: Path, manifest: Path,
             "l2_at_200": round(float(l2[min(199, steps - 1)]), 4),
             "l2_final": round(float(l2[-1]), 4),
             "energy_drift": round(energy_drift(ke_p, ke_r), 3),
+            "energy_drift_peak": round(energy_drift_peak(ke_p, ke_r, ke_r_peak), 4),
+            "ke_pred_final": round(ke_p, 6),
+            "ke_ref_final": round(ke_r, 6),
+            "ke_ref_peak": round(ke_r_peak, 6),
         })
         print(f"  {r['scenario']:>9} seed={int(r['seed']):>6}  "
               f"finite={finite}  horizon={horizon*1000:.0f}ms  "
@@ -150,7 +161,8 @@ def main():
                     horizon_s=("horizon_s", "mean"),
                     l2_at_200=("l2_at_200", "mean"),
                     l2_final=("l2_final", "mean"),
-                    energy_drift=("energy_drift", "mean"))
+                    energy_drift=("energy_drift", "mean"),
+                    energy_drift_peak=("energy_drift_peak", "mean"))
                .round(4))
     print(summ.to_string())
     print(f"\nwrote {args.out}")
