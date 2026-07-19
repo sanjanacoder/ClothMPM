@@ -71,10 +71,27 @@ def kinetic_energy(v: np.ndarray, mass_per: float) -> float:
 
 
 def energy_drift(ke_pred: float, ke_ref: float) -> float:
-    """|E_pred - E_ref| / E_ref."""
+    """|E_pred - E_ref| / E_ref.
+
+    NOTE: normalizing by the *instantaneous* reference energy is ill-conditioned
+    when E_ref -> 0 (a settled or turning-point cloth): a tiny absolute mismatch
+    reads as a huge ratio. Use energy_drift_peak for settling/oscillating cases.
+    """
     if abs(ke_ref) < 1e-12:
         return 0.0 if abs(ke_pred) < 1e-12 else float("inf")
     return float(abs(ke_pred - ke_ref) / abs(ke_ref))
+
+
+def energy_drift_peak(ke_pred: float, ke_ref: float, ke_ref_peak: float) -> float:
+    """|E_pred - E_ref| normalized by the trajectory's *peak* reference energy.
+
+    The peak KE is the characteristic energy scale of the rollout, so this is
+    well-conditioned even when the final reference KE is ~0 (settled/swinging
+    cloth) -- unlike energy_drift, which divides by the instantaneous E_ref.
+    """
+    if abs(ke_ref_peak) < 1e-12:
+        return 0.0
+    return float(abs(ke_pred - ke_ref) / abs(ke_ref_peak))
 
 
 def rollout_horizon(l2_per_frame: np.ndarray, tau: float, dt: float) -> float:

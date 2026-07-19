@@ -202,19 +202,38 @@ def main(
     prepare_only: bool = False,    # build the mmap store and stop (verify first)
     noise_sigma: float = 0.0,      # GNS/MGN train-noise for rollout drift-recovery
     window: int = 1,               # pushforward unroll horizon (1 = one-step)
+    manifest_override: str = "",   # train against a specific manifest already on
+                                   # the volume (e.g. a seed-holdout index_train.csv)
+                                   # instead of the store's default index.csv
 ):
     scen = [s for s in scenarios.split(",") if s] or None
     if smoke:
         epochs = min(epochs, 3)
         name = name if name != "mlp_noF_100clip" else "mlp_noF_smoke"
 
-    print("== preparing mmap store ==")
-    manifest = prepare_mmap.remote(mmap_subdir=mmap_subdir, scenarios=scen,
-                                   limit=prepare_limit, force=force_prepare)
-    print(f"manifest: {manifest}")
     if prepare_only:
-        print("prepare_only: mmap store built; stopping before training.")
+        # Fire-and-forget, fully server-side (pair with `modal run --detach`).
+        # A blocking .remote() gets cancelled if the local client is killed
+        # mid-conversion (observed: full10k prepare cancelled at ~22 min);
+        # .spawn() runs on Modal regardless. Poll the volume for the manifest.
+        print("== spawning mmap prepare (server-side) ==")
+        call = prepare_mmap.spawn(mmap_subdir=mmap_subdir, scenarios=scen,
+                                  limit=prepare_limit, force=force_prepare)
+        print(f"spawned prepare (call {call.object_id}) -- runs server-side.")
+        print(f"  manifest will land at /data/{mmap_subdir}/index.csv")
+        print(f"  monitor:  modal app logs <app-id>   (modal app list to find it)")
         return
+
+    if manifest_override:
+        # Store already built; train against the caller's manifest (e.g. a
+        # seed-holdout split) without rebuilding.
+        manifest = manifest_override
+        print(f"manifest (override): {manifest}")
+    else:
+        print("== preparing mmap store ==")
+        manifest = prepare_mmap.remote(mmap_subdir=mmap_subdir, scenarios=scen,
+                                       limit=prepare_limit, force=force_prepare)
+        print(f"manifest: {manifest}")
 
     print(f"== training ({'smoke' if smoke else 'full'}, epochs={epochs}, "
           f"batch={batch_size}, gpu={gpu}, max_frames={max_train_frames}) ==")

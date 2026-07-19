@@ -51,6 +51,61 @@ def _strain_rate_per_frame(F_seq: np.ndarray) -> np.ndarray:
     return out
 
 
+def strain_rate_from_positions(x_seq: np.ndarray, edge_index: np.ndarray,
+                               rest: np.ndarray | None = None,
+                               eps: float = 1e-6) -> np.ndarray:
+    """Deployment-available proxy for ||F_dot|| that needs only POSITIONS (no F).
+
+    The true strain_rate feature uses the MPM deformation gradient F, which a
+    no-F neural rollout never produces. Here we estimate a per-node local
+    deformation gradient F_i by a least-squares fit of the current k-ring
+    neighbour offsets to their rest offsets:
+        F_i = (sum_j dx_j dX_j^T) (sum_j dX_j dX_j^T)^{-1},
+    then return the frame-to-frame change max_i ||F_i(t) - F_i(t-1)||_F. Unlike
+    edge_len_change this captures local frame rotation / bending (which dominates
+    a near-inextensible cloth's swing), not just axial stretch. rest defaults to
+    the first frame (the initial ~flat sheet).
+
+    x_seq: (T, N, 3); edge_index: (2, E) long. Returns (T,) with index 0 = 0.
+    """
+    x_seq = np.asarray(x_seq, dtype=np.float64)
+    T, N, _ = x_seq.shape
+    out = np.zeros(T, dtype=np.float32)
+    if T < 2:
+        return out
+    rest = x_seq[0] if rest is None else np.asarray(rest, dtype=np.float64)
+
+    # Undirected neighbour lists, padded to a rectangular (N, Kmax) index array.
+    src, dst = edge_index[0], edge_index[1]
+    nbr_lists: list[list[int]] = [[] for _ in range(N)]
+    for s, d in zip(src.tolist(), dst.tolist()):
+        nbr_lists[s].append(d)
+    kmax = max((len(v) for v in nbr_lists), default=0)
+    if kmax == 0:
+        return out
+    nbr = np.zeros((N, kmax), dtype=np.int64)
+    mask = np.zeros((N, kmax), dtype=bool)
+    for i, v in enumerate(nbr_lists):
+        nbr[i, :len(v)] = v
+        mask[i, :len(v)] = True
+    m = mask[..., None]
+
+    dX = (rest[nbr] - rest[:, None, :]) * m                    # (N, kmax, 3)
+    A = np.einsum("nki,nkj->nij", dX, dX) + eps * np.eye(3)     # (N, 3, 3)
+    A_inv = np.linalg.inv(A)
+
+    F_prev = None
+    for t in range(T):
+        dx = (x_seq[t][nbr] - x_seq[t][:, None, :]) * m
+        B = np.einsum("nki,nkj->nij", dx, dX)                  # (N, 3, 3)
+        F = B @ A_inv
+        if F_prev is not None:
+            fd = np.sqrt(((F - F_prev) ** 2).sum(axis=(-1, -2)))
+            out[t] = float(fd.max())
+        F_prev = F
+    return out
+
+
 def _contact_fraction(contact_flag: np.ndarray) -> np.ndarray:
     """contact_flag: (T, N) bool -> (T,) float in [0, 1]."""
     return contact_flag.mean(axis=-1).astype(np.float32)

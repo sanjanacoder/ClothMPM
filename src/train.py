@@ -93,7 +93,8 @@ def _forward(model: nn.Module, batch, device: torch.device, model_kind: str):
     return pred, target.reshape(B * N, 3)
 
 
-def _unroll(model, batch, device, model_kind, stats, kring, dt, K, include_F):
+def _unroll(model, batch, device, model_kind, stats, kring, dt, K, include_F,
+            do_backward=False):
     """Pushforward / short-unroll: from the initial state, predict acceleration,
     integrate (semi-implicit Euler), and feed the model its OWN resulting state
     for K steps -- so it learns to correct model-generated (drifted) states, the
@@ -103,6 +104,13 @@ def _unroll(model, batch, device, model_kind, stats, kring, dt, K, include_F):
     K=1 reduces to one-step from the true initial state (used for validation).
     Loops over the batch and reuses the same assembly/model calls as the
     one-step path (correctness over speed; ~K x the one-step cost).
+
+    do_backward: when True, backprop each clip's K-step graph individually and
+    free it before the next clip, so peak memory is one clip's unroll (1xK) not
+    the whole batch (BxK). Accumulating the full BxK autograd graph for a single
+    outer backward OOMs at K>=2 regardless of batch size (the graph grows until
+    it hits the GPU ceiling). Grads accumulate across the batch; the caller runs
+    grad-clip + optimizer.step after. Returns the batch-mean loss as a float.
     """
     x0 = batch["x0"].to(device)             # (B, N, 3)
     v0 = batch["v_hist0"].to(device)        # (B, N, C, 3)
@@ -117,11 +125,12 @@ def _unroll(model, batch, device, model_kind, stats, kring, dt, K, include_F):
     F_id = torch.eye(3, device=device).expand(N, 3, 3).contiguous()
     ei = batch["edge_index"][0].to(device) if model_kind == "gnn" else None
 
-    loss = x0.new_zeros(())
     accel_l2 = []
-    n = 0
+    n = B * K
+    total_loss = 0.0
     for b in range(B):
         x, vh = x0[b], v0[b]                 # (N,3), (N,C,3)
+        loss_b = x0.new_zeros(())
         for k in range(K):
             if model_kind == "mlp":
                 feats = assemble_features(x, vh, F_id, f_ext, kring,
@@ -135,15 +144,19 @@ def _unroll(model, batch, device, model_kind, stats, kring, dt, K, include_F):
                 edge_n = (edge - em) / es if em is not None else edge
                 pred_n = model(node_n, edge_n, ei)
             tgt_n = (a_win[b, k] - tm) / ts
-            loss = loss + nn.functional.mse_loss(pred_n, tgt_n)
+            loss_b = loss_b + nn.functional.mse_loss(pred_n, tgt_n)
             accel_l2.append(((pred_n * ts) - (tgt_n * ts)).pow(2).sum(-1).sqrt().mean().item())
-            n += 1
             # semi-implicit Euler on the model's own (un-normalized) accel
             a_pred = pred_n * ts + tm
             v_new = vh[:, -1] + dt * a_pred
             x = x + dt * v_new
             vh = torch.cat([vh[:, 1:], v_new.unsqueeze(1)], dim=1)
-    return loss / n, float(np.mean(accel_l2))
+        # Backprop this clip now (scaled to the batch-mean loss) so its K-step
+        # graph frees before the next clip -- keeps peak memory at 1xK, not BxK.
+        if do_backward:
+            (loss_b / n).backward()
+        total_loss += float(loss_b.detach()) / n
+    return total_loss, float(np.mean(accel_l2))
 
 
 def _evaluate_unroll(model, loader, device, stats, model_kind, unroll_kw):
@@ -155,7 +168,7 @@ def _evaluate_unroll(model, loader, device, stats, model_kind, unroll_kw):
         for batch in loader:
             loss, a_l2 = _unroll(model, batch, device, model_kind, stats,
                                  K=1, **unroll_kw)
-            losses.append(loss.item())
+            losses.append(loss)
             accel.append(a_l2)
     return {"val_mse_norm": float(np.mean(losses)),
             "val_accel_l2_m_per_s2": float(np.mean(accel))}
@@ -357,17 +370,20 @@ def main():
         # (capped by --window) -- start small, grow toward the window each run.
         K = min(horizon, args.window) if args.window > 1 else 1
         for batch in train_loader:
+            optim.zero_grad(set_to_none=True)
             if unroll_kw is not None:
-                loss, _ = _unroll(model, batch, device, model_kind, stats,
-                                  K=K, **unroll_kw)
+                # _unroll backprops per-clip internally (memory-bounded); grads
+                # are already accumulated when it returns the scalar loss.
+                loss_val, _ = _unroll(model, batch, device, model_kind, stats,
+                                      K=K, do_backward=True, **unroll_kw)
             else:
                 pred, target = _forward(model, batch, device, model_kind)
                 loss = nn.functional.mse_loss(pred, target)
-            optim.zero_grad(set_to_none=True)
-            loss.backward()
+                loss.backward()
+                loss_val = loss.item()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optim.step()
-            train_losses.append(loss.item())
+            train_losses.append(loss_val)
         sched.step()
         train_mse = float(np.mean(train_losses)) if train_losses else float("nan")
         if unroll_kw is not None:
