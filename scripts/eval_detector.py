@@ -25,7 +25,7 @@ import torch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.data import build_kring_index
+from src.data import build_mesh_edge_index
 from src.detector import (compute_detector_features, strain_rate_from_positions,
                           warmup_mask)
 from src.eval import per_particle_l2
@@ -85,7 +85,11 @@ def collect_per_frame(ckpt_path: Path, manifest: Path, eps: float,
         pred_x = out["x"]
         l2 = np.array([per_particle_l2(pred_x[k], xref[s0 + 1 + k]) for k in range(steps)])
 
-        ei = build_kring_index(int(gx), int(gy), 1).numpy()
+        # (2, E) directed mesh-edge graph -- what compute_detector_features and
+        # strain_rate_from_positions expect. NOTE: build_kring_index returns an
+        # (N, 8) neighbour TABLE, not an edge list; passing it here silently
+        # corrupts the strain_proxy / edge_len_change features.
+        ei = build_mesh_edge_index(int(gx), int(gy)).numpy()
         clipd = {"x": clip["x"], "a": clip["a"], "F": clip["F"],
                  "contact_flag": clip["contact_flag"]}
         feats = compute_detector_features(clipd, edge_index=ei,
