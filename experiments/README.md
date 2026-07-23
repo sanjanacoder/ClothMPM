@@ -31,9 +31,8 @@ from `src/` and `scripts/`; only the orchestration lives here.
 
 ## Fine-tuning (DAgger — obstructed, kept for the record)
 `dagger_collect.py` → `dagger_targets.py` → `dagger_finetune.py`. Collect off-manifold
-(handoff/fallback) states, label them, fine-tune. Documented in
-`docs/handoff-ablation.md`: MPM targets on these states are off-manifold/unstable and
-fallback-accel targets are distributionally incompatible — i.e. the neural (MPM) and
-fallback (mass-spring) occupy different manifolds, so neither fine-tuning (a) nor
-blending (b) closes the handoff gap; minimizing transitions (hysteresis) is the
-practical mitigation.
+(handoff/fallback) states, label them, fine-tune. Outcome: MPM targets on these
+states are off-manifold/unstable and fallback-accel targets are distributionally
+incompatible — i.e. the neural (MPM) and fallback (mass-spring) occupy different
+manifolds, so neither fine-tuning (a) nor blending (b) closes the handoff gap;
+minimizing transitions (hysteresis) is the practical mitigation.
