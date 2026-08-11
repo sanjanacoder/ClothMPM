@@ -1,0 +1,238 @@
+% =====================================================================
+% references.bib  --  Hybrid Neural-MPM for Cloth
+%
+% Two groups:
+%  (A) the 13 papers from the project literature folder (papers/*.pdf),
+%      each verified against the source PDF's first page / metadata.
+%  (B) 10 additional papers, each verified against DBLP / arXiv / CVF /
+%      ACM DL via web lookup (Aug 2026). Marked "[verified: <source>]".
+%
+% One entry (zhao2024physcloth) still carries a TO-VERIFY note: the PDF
+% is a Word-produced preprint with no embedded venue/DOI.
+% =====================================================================
+
+
+% =====================================================================
+% (A) The 13 provided papers
+% =====================================================================
+
+% ---- MPM foundations ----
+
+% paper1.pdf
+@inproceedings{jiang2016mpm,
+  title={The material point method for simulating continuum materials},
+  author={Jiang, Chenfanfu and Schroeder, Craig and Teran, Joseph and Stomakhin, Alexey and Selle, Andrew},
+  booktitle={ACM SIGGRAPH 2016 Courses},
+  pages={1--52},
+  year={2016},
+  doi={10.1145/2897826.2927348}
+}
+
+% paper2.pdf
+@article{hu2018mlsmpm,
+  title={A moving least squares material point method with displacement discontinuity and two-way rigid body coupling},
+  author={Hu, Yuanming and Fang, Yu and Ge, Ziheng and Qu, Ziyin and Zhu, Yixin and Pradhana, Andre and Jiang, Chenfanfu},
+  journal={ACM Transactions on Graphics (SIGGRAPH)},
+  volume={37}, number={4}, pages={1--14},
+  year={2018},
+  doi={10.1145/3197517.3201293}
+}
+
+% paper3.pdf
+@article{stomakhin2013snow,
+  title={A material point method for snow simulation},
+  author={Stomakhin, Alexey and Schroeder, Craig and Chai, Lawrence and Teran, Joseph and Selle, Andrew},
+  journal={ACM Transactions on Graphics (SIGGRAPH)},
+  volume={32}, number={4}, articleno={102}, pages={1--10},
+  year={2013},
+  doi={10.1145/2461912.2461948}
+}
+
+% ---- Cloth / thin-shell with MPM ----
+
+% paper4.pdf
+@article{wolper2020anisompm,
+  title={AnisoMPM: Animating anisotropic damage mechanics},
+  author={Wolper, Joshuah and Chen, Yunuo and Li, Minchen and Fang, Yu and Qu, Ziyin and Lu, Jiecong and Cheng, Meggie and Jiang, Chenfanfu},
+  journal={ACM Transactions on Graphics (SIGGRAPH)},
+  volume={39}, number={4}, pages={1--16},
+  year={2020},
+  doi={10.1145/3386569.3392428}
+}
+
+% paper5.pdf
+@article{guo2018thinshells,
+  title={A material point method for thin shells with frictional contact},
+  author={Guo, Qi and Han, Xuchen and Fu, Chuyuan and Gast, Theodore and Tamstorf, Rasmus and Teran, Joseph},
+  journal={ACM Transactions on Graphics (SIGGRAPH)},
+  volume={37}, number={4}, pages={1--15},
+  year={2018},
+  doi={10.1145/3197517.3201346}
+}
+
+% paper6.pdf
+@inproceedings{zhang2025clothres,
+  title={Physics-inspired estimation of optimal cloth mesh resolution},
+  author={Zhang, Diyang and Wang, Zhendong and Liu, Zegao and Pei, Xinming and Xu, Weiwei and Wang, Huamin},
+  booktitle={ACM SIGGRAPH 2025 Conference Papers},
+  year={2025},
+  doi={10.1145/3721238.3730619}
+}
+
+% ---- Neural / hybrid physics simulation ----
+
+% paper7.pdf  --  the seed paper this project adapts from fluids to cloth
+@article{xu2025hybridmpm,
+  title={Hybrid Neural-MPM for interactive fluid simulations in real-time},
+  author={Xu, Jingxuan and Huang, Hong and Zou, Chuhang and Savva, Manolis and Wei, Yunchao and Chen, Wuyang},
+  journal={arXiv preprint arXiv:2505.18926},
+  year={2025}
+}
+
+% paper8.pdf  --  TO VERIFY: Dec-2024 Word-produced preprint, no embedded
+% venue/DOI/arXiv id. Title + author confirmed from page 1; roadmap
+% tentatively linked it to arXiv:2403.12820 -- confirm before camera-ready.
+@article{zhao2024physcloth,
+  title={A physics-embedded deep learning framework for cloth simulation},
+  author={Zhao, Zhiwei},
+  journal={arXiv preprint},
+  note={Preprint, 2024; venue/arXiv id to be verified},
+  year={2024}
+}
+
+% paper9.pdf
+@inproceedings{sanchez2020gns,
+  title={Learning to simulate complex physics with graph networks},
+  author={Sanchez-Gonzalez, Alvaro and Godwin, Jonathan and Pfaff, Tobias and Ying, Rex and Leskovec, Jure and Battaglia, Peter W.},
+  booktitle={International Conference on Machine Learning (ICML)},
+  pages={8459--8468},
+  year={2020}
+}
+
+% paper10.pdf
+@inproceedings{pfaff2021mgn,
+  title={Learning mesh-based simulation with graph networks},
+  author={Pfaff, Tobias and Fortunato, Meire and Sanchez-Gonzalez, Alvaro and Battaglia, Peter W.},
+  booktitle={International Conference on Learning Representations (ICLR)},
+  year={2021}
+}
+
+% paper11.pdf
+@inproceedings{um2020solver,
+  title={Solver-in-the-loop: Learning from differentiable physics to interact with iterative PDE-solvers},
+  author={Um, Kiwon and Brand, Robert and Fei, Yun (Raymond) and Holl, Philipp and Thuerey, Nils},
+  booktitle={Advances in Neural Information Processing Systems (NeurIPS)},
+  year={2020}
+}
+
+% paper12.pdf
+@inproceedings{hu2020difftaichi,
+  title={DiffTaichi: Differentiable programming for physical simulation},
+  author={Hu, Yuanming and Anderson, Luke and Li, Tzu-Mao and Sun, Qi and Carr, Nathan and Ragan-Kelley, Jonathan and Durand, Fr{\'e}do},
+  booktitle={International Conference on Learning Representations (ICLR)},
+  year={2020}
+}
+
+% ---- Implicit cloth (physics fallback) ----
+
+% paper13.pdf
+@inproceedings{baraff1998,
+  title={Large steps in cloth simulation},
+  author={Baraff, David and Witkin, Andrew},
+  booktitle={SIGGRAPH},
+  pages={43--54},
+  year={1998},
+  doi={10.1145/280814.280821}
+}
+
+
+% =====================================================================
+% (B) 10 additional papers -- verified via web lookup (Aug 2026)
+% =====================================================================
+
+% [verified: OpenReview / arXiv:2202.03376] -- the "pushforward trick" we train with
+@inproceedings{brandstetter2022mpnn,
+  title={Message passing neural PDE solvers},
+  author={Brandstetter, Johannes and Worrall, Daniel E. and Welling, Max},
+  booktitle={International Conference on Learning Representations (ICLR)},
+  year={2022}
+}
+
+% [verified: CVF Open Access / arXiv:2212.07242]
+@inproceedings{grigorev2023hood,
+  title={{HOOD}: Hierarchical graphs for generalized modelling of clothing dynamics},
+  author={Grigorev, Artur and Thomaszewski, Bernhard and Black, Michael J. and Hilliges, Otmar},
+  booktitle={IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  pages={16965--16974},
+  year={2023}
+}
+
+% [verified: CVF Open Access / arXiv:2204.02219]
+@inproceedings{santesteban2022snug,
+  title={{SNUG}: Self-supervised neural dynamic garments},
+  author={Santesteban, Igor and Otaduy, Miguel A. and Casas, Dan},
+  booktitle={IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  pages={8140--8150},
+  year={2022}
+}
+
+% [verified: ACM DL 10.1145/3478513.3480479]
+@article{bertiche2021pbns,
+  title={{PBNS}: Physically based neural simulation for unsupervised garment pose space deformation},
+  author={Bertiche, Hugo and Madadi, Meysam and Escalera, Sergio},
+  journal={ACM Transactions on Graphics (SIGGRAPH Asia)},
+  volume={40}, number={6}, articleno={198}, pages={1--14},
+  year={2021},
+  doi={10.1145/3478513.3480479}
+}
+
+% [verified: ACM DL 10.1145/566570.566623 / SIGGRAPH 2002]
+@article{bridson2002collisions,
+  title={Robust treatment of collisions, contact and friction for cloth animation},
+  author={Bridson, Robert and Fedkiw, Ronald and Anderson, John},
+  journal={ACM Transactions on Graphics (SIGGRAPH)},
+  volume={21}, number={3}, pages={594--603},
+  year={2002},
+  doi={10.1145/566570.566623}
+}
+
+% [verified: DBLP conf/iclr/LiWTTT19 / ICLR 2019] -- DPI-Nets
+@inproceedings{li2019dpi,
+  title={Learning particle dynamics for manipulating rigid bodies, deformable objects, and fluids},
+  author={Li, Yunzhu and Wu, Jiajun and Tedrake, Russ and Tenenbaum, Joshua B. and Torralba, Antonio},
+  booktitle={International Conference on Learning Representations (ICLR)},
+  year={2019}
+}
+
+% [verified: OpenReview B1lDoJSYDH / ICLR 2020] -- note 4 authors incl. Thuerey
+@inproceedings{ummenhofer2020cconv,
+  title={Lagrangian fluid simulation with continuous convolutions},
+  author={Ummenhofer, Benjamin and Prantl, Lukas and Thuerey, Nils and Koltun, Vladlen},
+  booktitle={International Conference on Learning Representations (ICLR)},
+  year={2020}
+}
+
+% [verified: PMLR v15 ross11a / AISTATS 2011] -- DAgger
+@inproceedings{ross2011dagger,
+  title={A reduction of imitation learning and structured prediction to no-regret online learning},
+  author={Ross, St{\'e}phane and Gordon, Geoffrey J. and Bagnell, Drew},
+  booktitle={Proceedings of the 14th International Conference on Artificial Intelligence and Statistics (AISTATS)},
+  volume={15}, pages={627--635},
+  year={2011}
+}
+
+% [verified: OpenReview r1gs9JgRZ / ICLR 2018]
+@inproceedings{micikevicius2018mixed,
+  title={Mixed precision training},
+  author={Micikevicius, Paulius and Narang, Sharan and Alben, Jonah and Diamos, Gregory and Elsen, Erich and Garcia, David and Ginsburg, Boris and Houston, Michael and Kuchaiev, Oleksii and Venkatesh, Ganesh and Wu, Hao},
+  booktitle={International Conference on Learning Representations (ICLR)},
+  year={2018}
+}
+
+% [verified: arXiv:1806.01261]
+@article{battaglia2018gn,
+  title={Relational inductive biases, deep learning, and graph networks},
+  author={Battaglia, Peter W. and Hamrick, Jessica B. and Bapst, Victor and Sanchez-Gonzalez, Alvaro and others},
+  journal={arXiv preprint arXiv:1806.01261},
+  year={2018}
+}
